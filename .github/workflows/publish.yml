@@ -1,0 +1,70 @@
+name: Publish
+
+# Triggered by the spec repo's promote.yml via repository_dispatch.
+# Builds and publishes the wheel + sdist to PyPI using the version
+# supplied in the dispatch payload. Trusted publisher (OIDC) — no
+# long-lived PyPI tokens.
+
+on:
+  repository_dispatch:
+    types: [publish]
+
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to publish (must match pyproject.toml)'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: pypi-publish
+    steps:
+      - name: Resolve version
+        id: v
+        env:
+          DISPATCH_VERSION: ${{ github.event.client_payload.version }}
+          INPUT_VERSION:    ${{ inputs.version }}
+        run: |
+          VERSION="${DISPATCH_VERSION:-$INPUT_VERSION}"
+          if [ -z "$VERSION" ]; then
+            echo "::error::no version supplied"
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Check out at release tag
+        uses: actions/checkout@v4
+        with:
+          ref: release/v${{ steps.v.outputs.version }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Verify version matches pyproject.toml
+        env:
+          VERSION: ${{ steps.v.outputs.version }}
+        run: |
+          PYPROJECT_VERSION=$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
+          if [ "$VERSION" != "$PYPROJECT_VERSION" ]; then
+            echo "::error::dispatch version $VERSION != pyproject.toml $PYPROJECT_VERSION"
+            exit 1
+          fi
+
+      - name: Build wheel + sdist
+        run: |
+          python -m pip install --upgrade pip
+          pip install build
+          python -m build
+
+      - name: Publish to PyPI (trusted publisher)
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/

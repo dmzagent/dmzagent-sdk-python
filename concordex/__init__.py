@@ -1,0 +1,71 @@
+"""Concordex — Python SDK.
+
+Concordex is the codex of trust between minds: a reference work that
+indexes how agents reveal themselves (Anima), how they move under
+conditions (Augur), and how trust between them is sustained
+(Concordia). This SDK is the customer-facing surface for streaming
+agent events and gating actions through circuit breakers.
+
+Quick start:
+
+    from concordex import Concordex
+
+    cx = Concordex(api_key="ck_...")
+
+    cx.subject_says(
+        agent_subject_id="user:ws:bot",
+        subject_id="user:ws:cust",
+        text="I want a refund.",
+    )
+
+    g = cx.check(subject_id="user:ws:bot")
+    if not g.allow:
+        return refuse(g.reason)
+
+Or with the high-level Conversation handle:
+
+    with cx.conversation(participants=[
+        {"subject_id": "user:ws:bot",  "role": "agent",    "kind": "agent"},
+        {"subject_id": "user:ws:cust", "role": "customer", "kind": "human"},
+    ]) as conv:
+        conv.says("user:ws:cust", "I want a refund.")
+        conv.says("user:ws:bot",  "I can help.")
+        with conv.guard("user:ws:bot", raise_on_open=True):
+            conv.tool_call("user:ws:bot", "refund.issue", {"amount": 99})
+
+This SDK implements the surface defined in concordex-sdk-spec at the
+version recorded in `__spec_version__`. See sdk-spec.md for the
+language-agnostic contract.
+"""
+from .client import Concordex, EVENT_KINDS
+from .conversation import Conversation
+from .errors import (
+    AuthError,
+    CBOpenError,
+    ConcordexError,
+    PermissionError,
+    ServerError,
+    ValidationError,
+)
+from .models import CheckResult, EmitResult
+from .webhook import verify_webhook_signature
+
+__version__      = "0.5.0"
+__spec_version__ = "0.5.0"
+
+__all__ = [
+    "Concordex",
+    "Conversation",
+    "CheckResult",
+    "EmitResult",
+    "EVENT_KINDS",
+    "ConcordexError",
+    "AuthError",
+    "PermissionError",
+    "ValidationError",
+    "ServerError",
+    "CBOpenError",
+    "verify_webhook_signature",
+    "__version__",
+    "__spec_version__",
+]
