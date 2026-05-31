@@ -7,18 +7,24 @@ name: Spec Conformance
 
 on:
   push:
-    branches: [main, release/**]
+    branches: [main, 'release/**']
   pull_request:
     branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: read
   statuses: write
 
+concurrency:
+  group: spec-conformance-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   conformance:
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         python: ['3.10', '3.11', '3.12']
     steps:
@@ -28,15 +34,45 @@ jobs:
       - name: Resolve pinned spec version
         id: spec
         run: |
-          VERSION=$(python -c "import tomllib,sys; print(tomllib.load(open('pyproject.toml','rb'))['tool']['concordex']['spec-version'])")
+          VERSION=$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['tool']['concordex']['spec-version'])")
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
-      - name: Check out concordex-sdk-spec at pinned tag
+      - name: Resolve spec checkout ref
+        id: spec_ref
+        env:
+          VERSION: ${{ steps.spec.outputs.version }}
+        run: |
+          # Release branches/tags gate against the immutable spec tag.
+          # Dev work on main follows the spec repo's main branch so day-1
+          # commits don't fail against a tag that hasn't been cut yet.
+          case "$GITHUB_REF" in
+            refs/heads/release/*|refs/tags/v*)
+              echo "ref=v${VERSION}" >> "$GITHUB_OUTPUT"
+              echo "mode=release"  >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "ref=main"      >> "$GITHUB_OUTPUT"
+              echo "mode=dev"      >> "$GITHUB_OUTPUT"
+              ;;
+          esac
+
+      - name: Check out concordex-sdk-spec
         uses: actions/checkout@v4
         with:
           repository: praeceptor-thesis/concordex-sdk-spec
-          ref: v${{ steps.spec.outputs.version }}
+          ref: ${{ steps.spec_ref.outputs.ref }}
           path: spec
+
+      - name: Verify spec VERSION matches pin (release mode only)
+        if: steps.spec_ref.outputs.mode == 'release'
+        env:
+          VERSION: ${{ steps.spec.outputs.version }}
+        run: |
+          FILE_VERSION=$(cat spec/VERSION | tr -d '[:space:]')
+          if [ "$FILE_VERSION" != "$VERSION" ]; then
+            echo "::error::spec VERSION '$FILE_VERSION' does not match pin '$VERSION'"
+            exit 1
+          fi
 
       - name: Set up Python ${{ matrix.python }}
         uses: actions/setup-python@v5

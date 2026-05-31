@@ -38,7 +38,7 @@ resolves server-side to the workspace_id, so we never need to pass
 workspace_id on the wire.
 
 Default base_url: `https://api.concordex.dev`. Customers running
-against staging override with `Concordex(api_key=…, base_url="https://staging.api.praeceptor-thesis.com")`.
+against staging override with `Concordex(api_key=…, base_url="https://staging.api.eastern-shore-solutions.com")`.
 
 This module implements spec version 0.5.0 — see sdk-spec.md in
 concordex-sdk-spec for the canonical surface.
