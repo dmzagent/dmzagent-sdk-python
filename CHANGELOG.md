@@ -1,5 +1,34 @@
 # Changelog
 
+## [0.6.0] — 2026-06-02
+
+### Added
+- `concordex.concordia` — Python client for the Concordia MCP 1.0
+  governance server at `/mcp/v1`. New `ConcordiaClient` class wraps
+  the four MCP tools (`enforce_covenant`, `record_decision`,
+  `query_corpus`, `get_subject_soul`) and the three resources
+  (`concordia:/workspace/policies`, `concordia:/workspace/canons`,
+  `concordia:/workspace/recent-ledger`) so callers don't write
+  JSON-RPC envelopes by hand.
+- Typed result dataclasses: `EnforceCovenantResult`,
+  `RecordDecisionResult`, `QueryCorpusResult`, `SubjectSoul`,
+  `PolicySummary`, `InstalledCanon`, `LedgerEntry`, `LedgerPage`.
+- Typed exception hierarchy with 1:1 mapping to MCP spec §8 error
+  codes: `ConcordiaAuthError`, `ConcordiaQuotaExceededError`,
+  `ConcordiaPolicyEngineUnavailableError`,
+  `ConcordiaCanonNotInstalledError`,
+  `ConcordiaSubjectNotFoundError`, `ConcordiaCircuitOpenError`,
+  `ConcordiaPermissionDeniedError`. Plus base `ConcordiaError` and
+  transport-level `ConcordiaProtocolError`.
+- `ConcordiaClient.iter_ledger()` generator for streaming through
+  paginated ledger pages.
+
+### Changed
+- Package version bumped to `0.6.0` (minor — additive, no breaking
+  changes to the existing 0.5.0 surface). The agent-stream
+  surface (`Concordex` client, `Conversation`, `verify_webhook_signature`)
+  remains at spec v0.5.0; `__spec_version__` is unchanged.
+
 ## [0.5.0] — 2026-05-30
 
 First lockstep release — supersedes the unilateral `0.1.0` line.

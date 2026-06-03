@@ -50,8 +50,14 @@ from .errors import (
 from .models import CheckResult, EmitResult
 from .webhook import verify_webhook_signature
 
-__version__      = "0.5.0"
-__spec_version__ = "0.5.0"
+# concordex.concordia — MCP 1.0 governance client (#218 / MCP-1.4).
+# Surfaced as a submodule attribute so callers write
+# `from concordex.concordia import ConcordiaClient`. Top-level import
+# stays cheap — the submodule imports lazily on attribute access.
+from . import concordia  # noqa: F401
+
+__version__      = "0.6.0"
+__spec_version__ = "0.5.0"   # agent-stream surface still at spec v0.5.0
 
 __all__ = [
     "Concordex",
@@ -66,6 +72,7 @@ __all__ = [
     "ServerError",
     "CBOpenError",
     "verify_webhook_signature",
+    "concordia",
     "__version__",
     "__spec_version__",
 ]

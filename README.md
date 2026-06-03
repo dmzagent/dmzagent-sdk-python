@@ -160,6 +160,75 @@ git clone https://github.com/praeceptor-thesis/concordex-sdk-spec ../concordex-s
 CONCORDEX_SPEC_PATH=../concordex-sdk-spec pytest tests/test_contract.py
 ```
 
+## Concordia MCP client (`concordex.concordia`)
+
+Concordia is Concordex's governance MCP server — customer agents
+speak [MCP 1.0](https://modelcontextprotocol.io/) to it to enforce
+covenants, record audit decisions, query installed Canons, and read
+accumulated soul state on subjects under observation.
+
+The Python SDK ships a typed client for it alongside the agent-stream
+surface, so you can do both in the same process without writing
+JSON-RPC by hand:
+
+```python
+from concordex.concordia import ConcordiaClient
+
+client = ConcordiaClient(api_key="ck_live_…")
+
+# Pre-flight check — does policy allow this action?
+v = client.enforce_covenant(
+    subject_id="user:alice",
+    action_kind="payment.issue",
+    action_payload={"amount": 9900, "currency": "usd"},
+    context={"session_id": "s_42", "model": "claude-sonnet-4-6"},
+)
+if v.verdict == "block":
+    return generate_safe_fallback(v.rationale)
+
+# Audit record after the fact
+client.record_decision(
+    subject_id="user:alice",
+    decision_kind="payment_issued",
+    payload={"refund_id": "re_123", "amount": 9900},
+    outcome="completed",
+)
+
+# Read installed policy Canons (cacheable at session start)
+for policy in client.workspace_policies():
+    print(policy.name, policy.action, policy.enabled)
+
+# Search Canons for relevant policy text
+result = client.query_corpus(query="how do we handle refund pressure?")
+for match in result.matches:
+    print(f"{match.canon_id}/{match.section}: {match.excerpt}")
+
+# Stream through the workspace's audit chain
+for entry in client.iter_ledger(since=0, page_size=100):
+    verify(entry.prev_hash, entry.hash, entry.payload)
+```
+
+Errors map 1:1 to the MCP spec §8 codes:
+`ConcordiaAuthError`, `ConcordiaQuotaExceededError`,
+`ConcordiaPolicyEngineUnavailableError`,
+`ConcordiaCanonNotInstalledError`,
+`ConcordiaSubjectNotFoundError`,
+`ConcordiaCircuitOpenError`,
+`ConcordiaPermissionDeniedError`. All inherit from
+`ConcordiaError`, so `try: ... except ConcordiaError as e:` covers
+every failure mode.
+
+The client is thread-safe and supports context-manager usage:
+
+```python
+with ConcordiaClient(api_key=os.environ["CONCORDEX_API_KEY"]) as c:
+    c.enforce_covenant(...)
+# HTTP pool released on exit
+```
+
+See [`CONCORDIA_MCP.md`](https://github.com/praeceptor-thesis/concordex-sdk-spec/blob/main/CONCORDIA_MCP.md)
+for the underlying protocol specification.
+
 ## License
 
 Apache-2.0
