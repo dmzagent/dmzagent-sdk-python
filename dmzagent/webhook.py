@@ -1,15 +1,15 @@
 """Webhook signature verification helper.
 
-Concordex outbound webhooks are signed with HMAC-SHA256 using the
+DMZAgent outbound webhooks are signed with HMAC-SHA256 using the
 subscription's secret. The signature header format is:
 
     t=<unix_seconds>,v1=<hex_hmac_sha256(secret, f"{t}.{payload}")>
 
 This helper is what customers wire into their webhook receiver to
-prove the request came from Concordex (and not a spoofed source) and
+prove the request came from DMZAgent (and not a spoofed source) and
 that the request is recent (not a replay).
 
-Reference vectors live in concordex-sdk-spec/contract-tests/
+Reference vectors live in dmzagent-sdk-spec/contract-tests/
 signature-vectors.json. The contract test runner verifies this
 implementation against every vector.
 """
@@ -39,7 +39,7 @@ def verify_webhook_signature(
 
     Args:
         payload:           the raw request body. str → utf-8 encoded.
-        signature_header:  the value of the Concordex-Signature header.
+        signature_header:  the value of the DMZAgent-Signature header.
         secret:            the subscription's signing secret.
         tolerance_seconds: max age the timestamp may have, in seconds.
                            Defaults to 300 (5 minutes).

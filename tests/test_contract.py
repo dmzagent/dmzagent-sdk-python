@@ -1,12 +1,12 @@
-"""Contract-test runner against concordex-sdk-spec.
+"""Contract-test runner against dmzagent-sdk-spec.
 
-Reads the JSON corpora from concordex-sdk-spec/contract-tests/ and
+Reads the JSON corpora from dmzagent-sdk-spec/contract-tests/ and
 drives this SDK to prove parity. The spec path defaults to a sibling
-directory; CI sets CONCORDEX_SPEC_PATH to the checked-out tag.
+directory; CI sets DMZAGENT_SPEC_PATH to the checked-out tag.
 
 Run with:
 
-    CONCORDEX_SPEC_PATH=../concordex-sdk-spec pytest tests/test_contract.py
+    DMZAGENT_SPEC_PATH=../dmzagent-sdk-spec pytest tests/test_contract.py
 
 This is the same corpus every other SDK runs against. Failures here
 mean the Python SDK has drifted from the spec.
@@ -22,11 +22,11 @@ from pathlib import Path
 import httpx
 import pytest
 
-from concordex import (
+from dmzagent import (
     AuthError,
     CBOpenError,
-    Concordex,
-    ConcordexError,
+    DMZAgent,
+    DMZAgentError,
     PermissionError,
     ServerError,
     ValidationError,
@@ -34,11 +34,11 @@ from concordex import (
 )
 
 
-# Resolve the spec path. CI sets CONCORDEX_SPEC_PATH; locally we fall
-# back to the sibling sdks-new/concordex-sdk-spec/ directory.
-_SPEC_PATH_ENV = os.environ.get("CONCORDEX_SPEC_PATH")
+# Resolve the spec path. CI sets DMZAGENT_SPEC_PATH; locally we fall
+# back to the sibling sdks-new/dmzagent-sdk-spec/ directory.
+_SPEC_PATH_ENV = os.environ.get("DMZAGENT_SPEC_PATH")
 _HERE          = Path(__file__).resolve().parent
-_DEFAULT_SPEC  = _HERE.parent.parent / "concordex-sdk-spec"
+_DEFAULT_SPEC  = _HERE.parent.parent / "dmzagent-sdk-spec"
 
 SPEC_PATH = Path(_SPEC_PATH_ENV) if _SPEC_PATH_ENV else _DEFAULT_SPEC
 
@@ -62,7 +62,7 @@ EXC_MAP = {
     "AuthError":                      AuthError,
     "PermissionError":                PermissionError,
     "ServerError":                    ServerError,
-    "ConcordexError":                 ConcordexError,
+    "DMZAgentError":                 DMZAgentError,
     "CBOpenError":                    CBOpenError,
     # The spec corpus marks client-side validation as
     # "ValidationError_or_ArgumentError". Python uses ValueError for
@@ -101,14 +101,14 @@ def stub_transport(captured):
 
 @pytest.fixture
 def client(stub_transport):
-    return Concordex(api_key="ck_test_xxxxxxxxxxxxxxxxxxxxx", transport=stub_transport)
+    return DMZAgent(api_key="ck_test_xxxxxxxxxxxxxxxxxxxxx", transport=stub_transport)
 
 
 # ===================================================================== #
 # Golden envelopes — serialization parity
 # ===================================================================== #
 
-def _call_method(client: Concordex, method: str, args: dict):
+def _call_method(client: DMZAgent, method: str, args: dict):
     if method == "subject_says":
         return client.subject_says(**args)
     if method == "tool_call":
@@ -145,9 +145,9 @@ def test_validation_failure(fx, stub_transport):
     expected = EXC_MAP[fx["expected_exception"]]
     if fx["method"] == "construct":
         with pytest.raises(expected) as ei:
-            Concordex(transport=stub_transport, **fx["args"])
+            DMZAgent(transport=stub_transport, **fx["args"])
     else:
-        client = Concordex(api_key="ck_test_xxxxxxxxxxxxxxxxxxxxx", transport=stub_transport)
+        client = DMZAgent(api_key="ck_test_xxxxxxxxxxxxxxxxxxxxx", transport=stub_transport)
         with pytest.raises(expected) as ei:
             _call_method(client, fx["method"], dict(fx["args"]))
     expected_msg = fx.get("expected_message_contains", "")
@@ -210,7 +210,7 @@ def test_error_mapping(fx, stub_transport, captured):
         lambda req: httpx.Response(fx["status"], json=response_body)
     )
 
-    client = Concordex(api_key="ck_test_xxxxxxxxxxxxxxxxxxxxx", transport=stub_transport)
+    client = DMZAgent(api_key="ck_test_xxxxxxxxxxxxxxxxxxxxx", transport=stub_transport)
 
     if fx["method"] == "guard_with_raise_on_open":
         expected = EXC_MAP[fx["expected_exception"]] if fx.get("expected_exception") else None

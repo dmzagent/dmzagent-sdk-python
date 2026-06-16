@@ -1,6 +1,6 @@
 name: Spec Conformance
 
-# Runs the contract test corpus from concordex-sdk-spec against this
+# Runs the contract test corpus from dmzagent-sdk-spec against this
 # SDK build. Reports the status check `spec-conformance/<version>` that
 # the spec repo's promote.yml verifies before dispatching publish.yml
 # here.
@@ -34,7 +34,7 @@ jobs:
       - name: Resolve pinned spec version
         id: spec
         run: |
-          VERSION=$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['tool']['concordex']['spec-version'])")
+          VERSION=$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['tool']['dmzagent']['spec-version'])")
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Resolve spec checkout ref
@@ -56,10 +56,10 @@ jobs:
               ;;
           esac
 
-      - name: Check out concordex-sdk-spec
+      - name: Check out dmzagent-sdk-spec
         uses: actions/checkout@v4
         with:
-          repository: praeceptor-thesis/concordex-sdk-spec
+          repository: praeceptor-thesis/dmzagent-sdk-spec
           ref: ${{ steps.spec_ref.outputs.ref }}
           path: spec
 
@@ -86,7 +86,7 @@ jobs:
 
       - name: Run contract tests
         env:
-          CONCORDEX_SPEC_PATH: ${{ github.workspace }}/spec
+          DMZAGENT_SPEC_PATH: ${{ github.workspace }}/spec
         run: pytest tests/test_contract.py -v
 
       - name: Report status check

@@ -1,32 +1,32 @@
-# concordex
+# dmzagent
 
-The Python SDK for **Concordex** — the codex of trust between minds.
+The Python SDK for **DMZAgent** — the codex of trust between minds.
 
-Concordex indexes how AI agents (and any other subject of study)
+DMZAgent indexes how AI agents (and any other subject of study)
 reveal themselves, predicts how they'll move under conditions, and
 gates their actions through auditable circuit breakers. This SDK is
 the customer-facing surface: emit conversation events, check whether
 a subject is still in good standing, verify webhook signatures, and
 let your operators write policy in one place.
 
-This is the **Python** implementation of the Concordex SDK
+This is the **Python** implementation of the DMZAgent SDK
 specification. The canonical surface is defined in
-[`concordex-sdk-spec`](https://github.com/praeceptor-thesis/concordex-sdk-spec)
+[`dmzagent-sdk-spec`](https://github.com/praeceptor-thesis/dmzagent-sdk-spec)
 and is implemented in lockstep across Python, TypeScript, C#, and Java.
 A given version (e.g. `0.5.0`) means the same surface in every language.
 
 ## Install
 
 ```bash
-pip install concordex
+pip install dmzagent
 ```
 
 ## Quickstart
 
 ```python
-from concordex import Concordex, CBOpenError
+from dmzagent import DMZAgent, CBOpenError
 
-cx = Concordex(api_key="ck_…")  # get one from your tenant_admin
+cx = DMZAgent(api_key="ck_…")  # get one from your tenant_admin
 
 with cx.conversation(participants=[
     {"subject_id": "user:ws_xxx:checkout-bot",  "role": "agent",    "kind": "agent"},
@@ -68,7 +68,7 @@ r.follow_my_data    # "/w/ws_xxx/frames/frame_xyz"
 ```
 
 Async mode keeps the response minimal — pass `async_mode=True` to
-`emit_event` (or set the header `X-Concordex-Async: true` if you
+`emit_event` (or set the header `X-DMZAgent-Async: true` if you
 construct requests manually):
 
 ```python
@@ -79,15 +79,15 @@ r.frame_id          # None — server is processing in the background
 
 ## Webhook verification
 
-Concordex outbound webhooks are signed with HMAC-SHA256. Verify them
+DMZAgent outbound webhooks are signed with HMAC-SHA256. Verify them
 on your receiver:
 
 ```python
-from concordex import verify_webhook_signature
+from dmzagent import verify_webhook_signature
 
 ok = verify_webhook_signature(
     payload          = request.body,                 # raw bytes or str
-    signature_header = request.headers["Concordex-Signature"],
+    signature_header = request.headers["DMZAgent-Signature"],
     secret           = WEBHOOK_SUBSCRIPTION_SECRET,
     tolerance_seconds = 300,                          # max age, default 300
 )
@@ -102,7 +102,7 @@ expired timestamps, or signature mismatches.
 
 **Subject.** An identifiable noun: an AI agent, a human customer, a
 sensor, an institution. Each has a stable `subject_id` and a soul that
-Concordex builds up from observed behavior.
+DMZAgent builds up from observed behavior.
 
 **Interaction.** Anything that involves multiple subjects together —
 a chat session, a transaction chain, a video feed. Events stamp an
@@ -123,7 +123,7 @@ Recomputed after every reasoning step; cached for sub-50ms reads.
 | `ServerError`      | Server returned 5xx — safe to retry           |
 | `CBOpenError`      | Circuit breaker open — action must not proceed|
 
-All inherit from `ConcordexError`. Use `try/except CBOpenError` as a
+All inherit from `DMZAgentError`. Use `try/except CBOpenError` as a
 control-flow seam around sensitive actions:
 
 ```python
@@ -137,9 +137,9 @@ except CBOpenError as e:
 ## Configuration
 
 ```python
-cx = Concordex(
+cx = DMZAgent(
     api_key="ck_…",
-    base_url="https://api.concordex.dev",   # override for staging / on-prem
+    base_url="https://api.dmzagent.com",   # override for staging / on-prem
     timeout=10.0,                            # per-request seconds
     user_agent="my-app/1.2.3",               # appears in server-side audit logs
 )
@@ -147,8 +147,8 @@ cx = Concordex(
 
 ## Spec version
 
-This SDK implements the [Concordex SDK specification](https://github.com/praeceptor-thesis/concordex-sdk-spec)
-at the version pinned in `pyproject.toml`'s `[tool.concordex]
+This SDK implements the [DMZAgent SDK specification](https://github.com/praeceptor-thesis/dmzagent-sdk-spec)
+at the version pinned in `pyproject.toml`'s `[tool.dmzagent]
 spec-version`. The contract test corpus from that repo is what
 guarantees parity with the TypeScript, C#, and Java SDKs at the same
 version.
@@ -156,13 +156,13 @@ version.
 To run conformance locally:
 
 ```bash
-git clone https://github.com/praeceptor-thesis/concordex-sdk-spec ../concordex-sdk-spec
-CONCORDEX_SPEC_PATH=../concordex-sdk-spec pytest tests/test_contract.py
+git clone https://github.com/praeceptor-thesis/dmzagent-sdk-spec ../dmzagent-sdk-spec
+DMZAGENT_SPEC_PATH=../dmzagent-sdk-spec pytest tests/test_contract.py
 ```
 
-## Concordia MCP client (`concordex.concordia`)
+## Concordia MCP client (`dmzagent.concordia`)
 
-Concordia is Concordex's governance MCP server — customer agents
+Concordia is DMZAgent's governance MCP server — customer agents
 speak [MCP 1.0](https://modelcontextprotocol.io/) to it to enforce
 covenants, record audit decisions, query installed Canons, and read
 accumulated soul state on subjects under observation.
@@ -172,7 +172,7 @@ surface, so you can do both in the same process without writing
 JSON-RPC by hand:
 
 ```python
-from concordex.concordia import ConcordiaClient
+from dmzagent.concordia import ConcordiaClient
 
 client = ConcordiaClient(api_key="ck_live_…")
 
@@ -221,12 +221,12 @@ every failure mode.
 The client is thread-safe and supports context-manager usage:
 
 ```python
-with ConcordiaClient(api_key=os.environ["CONCORDEX_API_KEY"]) as c:
+with ConcordiaClient(api_key=os.environ["DMZAGENT_API_KEY"]) as c:
     c.enforce_covenant(...)
 # HTTP pool released on exit
 ```
 
-See [`CONCORDIA_MCP.md`](https://github.com/praeceptor-thesis/concordex-sdk-spec/blob/main/CONCORDIA_MCP.md)
+See [`CONCORDIA_MCP.md`](https://github.com/praeceptor-thesis/dmzagent-sdk-spec/blob/main/CONCORDIA_MCP.md)
 for the underlying protocol specification.
 
 ## License

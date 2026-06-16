@@ -3,14 +3,14 @@ requires = ["hatchling>=1.18"]
 build-backend = "hatchling.build"
 
 [project]
-name = "concordex"
+name = "dmzagent"
 version = "0.6.0"
 description = "The codex of trust between minds — Python SDK for emitting agent events to Anima and governing them through Concordia's MCP."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "Apache-2.0" }
 authors = [
-    { name = "Concordex", email = "sdk@concordex.dev" },
+    { name = "DMZAgent", email = "sdk@dmzagent.com" },
 ]
 keywords = ["ai", "agents", "observability", "governance", "circuit-breaker"]
 classifiers = [
@@ -28,11 +28,11 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage      = "https://concordex.dev"
-Documentation = "https://docs.concordex.dev/sdk/python"
-Source        = "https://github.com/praeceptor-thesis/concordex-sdk-python"
-Issues        = "https://github.com/praeceptor-thesis/concordex-sdk-python/issues"
-Spec          = "https://github.com/praeceptor-thesis/concordex-sdk-spec"
+Homepage      = "https://dmzagent.com"
+Documentation = "https://docs.dmzagent.com/sdk/python"
+Source        = "https://github.com/praeceptor-thesis/dmzagent-sdk-python"
+Issues        = "https://github.com/praeceptor-thesis/dmzagent-sdk-python/issues"
+Spec          = "https://github.com/praeceptor-thesis/dmzagent-sdk-spec"
 
 [project.optional-dependencies]
 dev = [
@@ -42,16 +42,16 @@ dev = [
     "ruff>=0.5",
 ]
 
-[tool.concordex]
+[tool.dmzagent]
 # Spec version this SDK implements. CI verifies the checked-out
-# concordex-sdk-spec tag matches this value. See sdk-spec.md §11.1.
-spec-version = "0.5.0"
+# dmzagent-sdk-spec tag matches this value. See sdk-spec.md §11.1.
+spec-version = "0.6.0"
 
 [tool.hatch.build.targets.wheel]
-packages = ["concordex"]
+packages = ["dmzagent"]
 
 [tool.hatch.build.targets.sdist]
-include = ["concordex/**", "README.md", "LICENSE"]
+include = ["dmzagent/**", "README.md", "LICENSE"]
 
 [tool.ruff]
 line-length = 100

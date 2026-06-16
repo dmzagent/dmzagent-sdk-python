@@ -1,15 +1,15 @@
-"""Exception hierarchy for the Concordex SDK.
+"""Exception hierarchy for the DMZAgent SDK.
 
 The hierarchy is deliberately shallow — most consumers only need to
-catch ConcordexError to bail out gracefully, or CBOpenError specifically
+catch DMZAgentError to bail out gracefully, or CBOpenError specifically
 when they want to handle a blocked subject differently from other
 failures.
 
-  ConcordexError                base
+  DMZAgentError                base
     ├── AuthError               API key invalid, expired, revoked
     ├── PermissionError         API key valid but lacks the needed scope
     ├── ValidationError         server rejected the payload as malformed
-    ├── ServerError             5xx from Concordex; safe to retry
+    ├── ServerError             5xx from DMZAgent; safe to retry
     └── CBOpenError             cb.check() returned open — action blocked
 
 `CBOpenError` is intentionally an exception (not just a flag) so that
@@ -20,7 +20,7 @@ authorization-failure exceptions.
 from __future__ import annotations
 
 
-class ConcordexError(Exception):
+class DMZAgentError(Exception):
     """Base class for every error raised by the SDK."""
 
     def __init__(self, message: str, *, status_code: int | None = None,
@@ -30,23 +30,23 @@ class ConcordexError(Exception):
         self.body = body
 
 
-class AuthError(ConcordexError):
+class AuthError(DMZAgentError):
     """API key was rejected (missing / invalid / revoked)."""
 
 
-class PermissionError(ConcordexError):  # noqa: A001 — intentional shadowing
+class PermissionError(DMZAgentError):  # noqa: A001 — intentional shadowing
     """API key is valid but lacks the scope required for this operation."""
 
 
-class ValidationError(ConcordexError):
+class ValidationError(DMZAgentError):
     """The server returned 400 — the payload was malformed."""
 
 
-class ServerError(ConcordexError):
+class ServerError(DMZAgentError):
     """The server returned 5xx. Caller may safely retry with backoff."""
 
 
-class CBOpenError(ConcordexError):
+class CBOpenError(DMZAgentError):
     """The circuit breaker is open for this subject. Action MUST NOT proceed.
 
     Attributes:

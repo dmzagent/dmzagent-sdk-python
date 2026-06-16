@@ -36,7 +36,7 @@ from typing import TYPE_CHECKING, Any, Iterator
 from .models import CheckResult, EmitResult
 
 if TYPE_CHECKING:
-    from .client import Concordex
+    from .client import DMZAgent
 
 
 # Roles the SDK treats as "this participant is an agent for the
@@ -54,7 +54,7 @@ class Conversation:
     def __init__(
         self,
         *,
-        client: "Concordex",
+        client: "DMZAgent",
         participants: list[dict],
         agent_subject_id: str | None = None,
         interaction_kind: str = "chat_session",
@@ -139,7 +139,13 @@ class Conversation:
     # Event emission — all delegate to client.subject_says / etc.
     # ===================================================================== #
 
-    def says(self, subject_id: str, text: str, **kwargs: Any) -> EmitResult:
+    def says(
+        self,
+        subject_id: str,
+        subject_type: str,
+        text: str,
+        **kwargs: Any,
+    ) -> EmitResult:
         """A subject in the conversation spoke. The SDK figures out
         their role from the roster."""
         r = self._client.subject_says(
@@ -147,6 +153,7 @@ class Conversation:
             interaction_kind=self._interaction_kind if not self._interaction_id else "chat_session",
             agent_subject_id=self._agent_subject_id,
             subject_id=subject_id,
+            subject_type=subject_type,
             text=text,
             subjects=self._subjects,
             **kwargs,
@@ -158,6 +165,7 @@ class Conversation:
     def tool_call(
         self,
         subject_id: str,
+        subject_type: str,
         tool: str,
         args: dict | None = None,
         **kwargs: Any,
@@ -166,6 +174,7 @@ class Conversation:
         r = self._client.tool_call(
             interaction_id=self._interaction_id,
             subject_id=subject_id,
+            subject_type=subject_type,
             tool=tool,
             args=args,
             subjects=self._subjects,
@@ -178,6 +187,7 @@ class Conversation:
     def tool_result(
         self,
         subject_id: str,
+        subject_type: str,
         tool: str,
         result: Any,
         **kwargs: Any,
@@ -186,6 +196,7 @@ class Conversation:
         r = self._client.tool_result(
             interaction_id=self._interaction_id,
             subject_id=subject_id,
+            subject_type=subject_type,
             tool=tool,
             result=result,
             subjects=self._subjects,
@@ -195,12 +206,18 @@ class Conversation:
             self._interaction_id = r.interaction_id
         return r
 
-    def observation(self, payload: dict, **kwargs: Any) -> EmitResult:
+    def observation(
+        self,
+        subject_type: str,
+        payload: dict,
+        **kwargs: Any,
+    ) -> EmitResult:
         """Structured observation — video keyframe, IoT event, anything
         not utterance-shaped."""
         r = self._client.observation(
             interaction_id=self._interaction_id,
             agent_subject_id=self._agent_subject_id,
+            subject_type=subject_type,
             subjects=self._subjects,
             payload=payload,
             **kwargs,

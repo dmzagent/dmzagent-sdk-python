@@ -1,14 +1,15 @@
-"""The Concordex client — the SDK's main entry point.
+"""The DMZAgent client — the SDK's main entry point.
 
 Usage:
 
-    from concordex import Concordex
+    from dmzagent import DMZAgent
 
-    cx = Concordex(api_key="ck_…")
+    cx = DMZAgent(api_key="ck_…")
 
     cx.subject_says(
         agent_subject_id="user:ws_xxx:checkout-bot",
         subject_id="user:ws_xxx:customer-anon",
+        subject_type="chat",
         text="I want a refund.",
         subjects=[
             {"subject_id": "user:ws_xxx:checkout-bot",  "role": "agent"},
@@ -23,6 +24,7 @@ Usage:
     cx.tool_call(
         interaction_id="int_abc",
         subject_id="user:ws_xxx:checkout-bot",
+        subject_type="chat",
         tool="refund.issue",
         args={"amount": 9900},
     )
@@ -37,16 +39,17 @@ Auth: every request carries `Authorization: Bearer ck_…`. The key
 resolves server-side to the workspace_id, so we never need to pass
 workspace_id on the wire.
 
-Default base_url: `https://api.concordex.dev`. Customers running
-against staging override with `Concordex(api_key=…, base_url="https://staging.api.eastern-shore-solutions.com")`.
+Default base_url: `https://api.dmzagent.com`. Customers running
+against staging override with `DMZAgent(api_key=…, base_url="https://staging.api.eastern-shore-solutions.com")`.
 
-This module implements spec version 0.5.0 — see sdk-spec.md in
-concordex-sdk-spec for the canonical surface.
+This module implements spec version 0.6.0 — see sdk-spec.md in
+dmzagent-sdk-spec for the canonical surface.
 """
 from __future__ import annotations
 
 import contextlib
 import logging
+import time
 from typing import Any, Iterator
 
 import httpx
@@ -54,19 +57,26 @@ import httpx
 from .errors import (
     AuthError,
     CBOpenError,
-    ConcordexError,
+    DMZAgentError,
     PermissionError,
     ServerError,
     ValidationError,
 )
-from .models import CheckResult, EmitResult
+from .models import (
+    CaptureResult,
+    CheckResult,
+    DivisionConfig,
+    EmitResult,
+    NotificationPrefs,
+    OutcomeResult,
+)
 
-logger = logging.getLogger("concordex")
+logger = logging.getLogger("dmzagent")
 
 
-_DEFAULT_BASE_URL = "https://api.concordex.dev"
+_DEFAULT_BASE_URL = "https://api.dmzagent.com"
 _DEFAULT_TIMEOUT_S = 10.0
-_SPEC_VERSION = "0.5.0"
+_SPEC_VERSION = "0.6.0"
 
 
 # Event kinds the agent_stream endpoint accepts. Mirrors
@@ -74,9 +84,11 @@ _SPEC_VERSION = "0.5.0"
 # the spec.
 EVENT_KINDS = ("subject_says", "tool_call", "tool_result", "observation")
 
+VALID_SUBJECT_TYPES = ("chat", "lead", "journey", "sensor", "ticket")
 
-class Concordex:
-    """Synchronous Concordex client. Thread-safe (httpx.Client is)."""
+
+class DMZAgent:
+    """Synchronous DMZAgent client. Thread-safe (httpx.Client is)."""
 
     def __init__(
         self,
@@ -98,7 +110,7 @@ class Concordex:
             headers={
                 "Authorization":   f"Bearer {api_key}",
                 "Content-Type":    "application/json",
-                "User-Agent":      user_agent or f"concordex-python/{_SPEC_VERSION}",
+                "User-Agent":      user_agent or f"dmzagent-python/{_SPEC_VERSION}",
             },
             transport=transport,
         )
@@ -112,6 +124,7 @@ class Concordex:
         kind: str,
         *,
         agent_subject_id: str,
+        subject_type: str,
         payload: dict[str, Any] | None = None,
         interaction_id: str | None = None,
         interaction_kind: str = "chat_session",
@@ -129,16 +142,19 @@ class Concordex:
         every event against an agent identity (the conversation anchor);
         the speaker is named separately via `speaker_subject_id`.
 
-        `async_mode=True` sets `X-Concordex-Async: true`, switching the
+        `async_mode=True` sets `X-DMZAgent-Async: true`, switching the
         server to fire-and-forget — the result envelope will only
         contain `interaction_id`, `subjects`, `queued=True`. Sync-only
         fields (frame_id, tags_fired, etc.) will be None / empty.
         """
         if kind not in EVENT_KINDS:
             raise ValueError(f"kind must be one of {EVENT_KINDS}, got {kind!r}")
+        if subject_type not in VALID_SUBJECT_TYPES:
+            raise ValueError(f"subject_type must be one of {VALID_SUBJECT_TYPES}, got {subject_type!r}")
         body: dict[str, Any] = {
             "kind":             kind,
             "agent_subject_id": agent_subject_id,
+            "subject_type":     subject_type,
             "payload":          payload or {},
         }
         if interaction_id:    body["interaction_id"]   = interaction_id
@@ -149,7 +165,7 @@ class Concordex:
         if occurred_at:       body["occurred_at"]      = occurred_at
         if metadata:          body["metadata"]         = metadata
 
-        extra_headers = {"X-Concordex-Async": "true"} if async_mode else None
+        extra_headers = {"X-DMZAgent-Async": "true"} if async_mode else None
         data = self._post_json("/v1/agent-stream/event", body, extra_headers=extra_headers)
         return EmitResult.from_response(data)
 
@@ -159,6 +175,7 @@ class Concordex:
         self,
         *,
         subject_id: str,
+        subject_type: str,
         text: str,
         interaction_id: str | None = None,
         agent_subject_id: str | None = None,
@@ -168,7 +185,7 @@ class Concordex:
         """A subject in the conversation said something.
 
         `subject_id` is the speaker — could be an agent, a human
-        customer, a sensor, anything Concordex has registered as a
+        customer, a sensor, anything DMZAgent has registered as a
         subject. The SDK doesn't care; it passes the speaker explicitly
         via `speaker_subject_id` and lets the server attribute the
         utterance based on the subjects roster.
@@ -190,6 +207,7 @@ class Concordex:
             "subject_says",
             interaction_id=interaction_id,
             agent_subject_id=agent_subject_id,
+            subject_type=subject_type,
             payload={"text": text, **kwargs.pop("payload_extra", {})},
             subjects=subjects,
             speaker_subject_id=subject_id,
@@ -201,6 +219,7 @@ class Concordex:
         *,
         interaction_id: str | None = None,
         subject_id: str,
+        subject_type: str,
         tool: str,
         args: dict | None = None,
         subjects: list[dict] | None = None,
@@ -212,6 +231,7 @@ class Concordex:
             "tool_call",
             interaction_id=interaction_id,
             agent_subject_id=subject_id,
+            subject_type=subject_type,
             payload={"tool": tool, "args": args or {}},
             subjects=subjects,
             speaker_subject_id=subject_id,
@@ -224,6 +244,7 @@ class Concordex:
         *,
         interaction_id: str | None = None,
         subject_id: str,
+        subject_type: str,
         tool: str,
         result: Any,
         subjects: list[dict] | None = None,
@@ -234,6 +255,7 @@ class Concordex:
             "tool_result",
             interaction_id=interaction_id,
             agent_subject_id=subject_id,
+            subject_type=subject_type,
             payload={"tool": tool, "result": result},
             subjects=subjects,
             speaker_subject_id=subject_id,
@@ -245,6 +267,7 @@ class Concordex:
         *,
         interaction_id: str | None = None,
         agent_subject_id: str,
+        subject_type: str,
         subjects: list[dict],
         payload: dict,
         **kwargs: Any,
@@ -255,10 +278,84 @@ class Concordex:
             "observation",
             interaction_id=interaction_id,
             agent_subject_id=agent_subject_id,
+            subject_type=subject_type,
             payload=payload,
             subjects=subjects,
             **kwargs,
         )
+
+    # ===================================================================== #
+    # Capture — /v1/agent-stream/event (capture shape, different from emit)
+    # ===================================================================== #
+
+    def capture(
+        self,
+        *,
+        subject_id: str,
+        kind: str,
+        subject_type: str,
+        payload: dict[str, Any] | None = None,
+        agent_subject_id: str | None = None,
+        interaction_id: str | None = None,
+        interaction_kind: str | None = None,
+        subjects: list[dict] | None = None,
+        speaker_subject_id: str | None = None,
+        speaker_role: str | None = None,
+        occurred_at: str | None = None,
+        metadata: dict | None = None,
+    ) -> CaptureResult:
+        """Capture an event in the agent stream.
+
+        `kind` ∈ {"subject_says", "tool_call", "tool_result", "observation"}.
+        Unlike `emit_event`, `agent_subject_id` is optional here.
+        """
+        if kind not in EVENT_KINDS:
+            raise ValueError(f"kind must be one of {EVENT_KINDS}, got {kind!r}")
+        if subject_type not in VALID_SUBJECT_TYPES:
+            raise ValueError(f"subject_type must be one of {VALID_SUBJECT_TYPES}, got {subject_type!r}")
+        body: dict[str, Any] = {
+            "kind":             kind,
+            "subject_id":       subject_id,
+            "subject_type":     subject_type,
+            "payload":          payload or {},
+        }
+        if agent_subject_id:  body["agent_subject_id"]  = agent_subject_id
+        if interaction_id:    body["interaction_id"]    = interaction_id
+        if interaction_kind:  body["interaction_kind"]  = interaction_kind
+        if subjects:          body["subjects"]          = subjects
+        if speaker_subject_id: body["speaker_subject_id"] = speaker_subject_id
+        if speaker_role:      body["speaker_role"]      = speaker_role
+        if occurred_at:       body["occurred_at"]       = occurred_at
+        if metadata:          body["metadata"]          = metadata
+
+        data = self._post_json("/v1/agent-stream/event", body)
+        return CaptureResult.from_response(data)
+
+    # ===================================================================== #
+    # Await outcome — GET /v1/frames/{frame_id}/story
+    # ===================================================================== #
+
+    def await_outcome(
+        self,
+        frame_id: str,
+        timeout: float = 30.0,
+    ) -> OutcomeResult:
+        """Poll the frame story endpoint until an outcome is available.
+
+        Backoff: start 100ms, double to max 2s, cap at `timeout`.
+        Raises ServerError with "timeout" message if exceeded.
+        """
+        deadline = time.monotonic() + timeout
+        delay = 0.1
+        while True:
+            data = self._get_json(f"/v1/frames/{frame_id}/story")
+            outcome = data.get("outcome")
+            if outcome and outcome != "pending":
+                return OutcomeResult.from_response(data)
+            if time.monotonic() >= deadline:
+                raise ServerError("timeout")
+            time.sleep(delay)
+            delay = min(delay * 2, 2.0)
 
     # ===================================================================== #
     # Circuit breaker — /v1/cb/check
@@ -367,6 +464,43 @@ class Concordex:
         )
 
     # ===================================================================== #
+    # Notification preferences — /v1/settings/notifications
+    # ===================================================================== #
+
+    def get_notification_prefs(self) -> NotificationPrefs:
+        """Fetch the current user's notification preferences."""
+        data = self._get_json("/v1/settings/notifications")
+        return NotificationPrefs.from_response(data)
+
+    def update_notification_prefs(self, **prefs: dict | bool | str | None) -> NotificationPrefs:
+        """Update notification preferences. Only supplied fields are touched.
+
+        Supported keyword args: email_cadence (off|daily|weekly),
+        push_enabled (bool), phone (str), sms_enabled (bool),
+        whatsapp_enabled (bool).
+        """
+        data = self._put_json("/v1/settings/notifications", prefs)
+        return NotificationPrefs.from_response(data)
+
+    # ===================================================================== #
+    # Division config — /v1/divisions/{id}/config
+    # ===================================================================== #
+
+    def get_division_config(self, division_id: str) -> DivisionConfig:
+        """Read a division's JSON config blob.
+
+        Contains settings like ``reasoning_mode``
+        ("per_frame" | "per_trace").
+        """
+        data = self._get_json(f"/v1/divisions/{division_id}/config")
+        return DivisionConfig.from_response(data)
+
+    def update_division_config(self, division_id: str, config: dict) -> DivisionConfig:
+        """Replace a division's JSON config blob."""
+        data = self._put_json(f"/v1/divisions/{division_id}/config", config)
+        return DivisionConfig.from_response(data)
+
+    # ===================================================================== #
     # Resource management
     # ===================================================================== #
 
@@ -374,7 +508,7 @@ class Concordex:
         """Close the underlying httpx.Client. Safe to call multiple times."""
         self._client.close()
 
-    def __enter__(self) -> "Concordex":
+    def __enter__(self) -> "DMZAgent":
         return self
 
     def __exit__(self, *exc: Any) -> None:
@@ -383,6 +517,26 @@ class Concordex:
     # ===================================================================== #
     # Internal — HTTP plumbing
     # ===================================================================== #
+
+    def _get_json(self, path: str) -> dict:
+        url = f"{self._base_url}{path}"
+        try:
+            resp = self._client.get(url)
+        except httpx.TimeoutException as e:
+            raise ServerError(f"timeout calling {path}", body=str(e)) from e
+        except httpx.RequestError as e:
+            raise ServerError(f"network error calling {path}: {e}") from e
+        return self._handle(resp, path)
+
+    def _put_json(self, path: str, body: dict) -> dict:
+        url = f"{self._base_url}{path}"
+        try:
+            resp = self._client.put(url, json=body)
+        except httpx.TimeoutException as e:
+            raise ServerError(f"timeout calling {path}", body=str(e)) from e
+        except httpx.RequestError as e:
+            raise ServerError(f"network error calling {path}: {e}") from e
+        return self._handle(resp, path)
 
     def _post_json(
         self,
@@ -432,7 +586,7 @@ class Concordex:
                 f"server error from {path} ({resp.status_code})",
                 status_code=resp.status_code, body=body,
             )
-        raise ConcordexError(
+        raise DMZAgentError(
             f"unexpected status {resp.status_code} from {path}",
             status_code=resp.status_code, body=body,
         )

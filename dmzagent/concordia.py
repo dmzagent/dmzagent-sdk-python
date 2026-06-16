@@ -1,11 +1,11 @@
-"""Concordex Concordia — Python client for the governance MCP.
+"""DMZAgent Concordia — Python client for the governance MCP.
 
-This module wraps the Concordia MCP 1.0 server (`/mcp/v1` on a Concordex
+This module wraps the Concordia MCP 1.0 server (`/mcp/v1` on a DMZAgent
 tenant) so customer agents can enforce covenants, record decisions,
 query installed Canons, and read accumulated soul state without
 writing JSON-RPC envelopes by hand.
 
-Companion to the existing `concordex.Concordex` client (which handles
+Companion to the existing `dmzagent.DMZAgent` client (which handles
 agent-stream events and circuit-breaker checks at the workspace level).
 ConcordiaClient targets a different protocol — MCP over HTTPS+JSON-RPC
 — and a different audience: customer agents that need to interact with
@@ -13,7 +13,7 @@ governance infrastructure as part of their own decision loop.
 
 Quick start:
 
-    from concordex.concordia import ConcordiaClient
+    from dmzagent.concordia import ConcordiaClient
 
     client = ConcordiaClient(api_key="ck_live_…")
 
@@ -36,7 +36,7 @@ Quick start:
 The MCP wire protocol is JSON-RPC 2.0 over HTTPS. This client wraps
 the envelope so caller code looks like ordinary method calls.
 
-Spec: CONCORDIA_MCP.md (server side) and concordex-sdk-spec §8 (Python
+Spec: CONCORDIA_MCP.md (server side) and dmzagent-sdk-spec §8 (Python
 naming conventions). This module implements MCP 1.0 — covered by
 spec §10 milestones MCP-1.1 through MCP-1.3 on the server.
 """
@@ -291,9 +291,9 @@ _ERROR_MAP: dict[int, type[ConcordiaError]] = {
 # Client
 # --------------------------------------------------------------------------- #
 
-DEFAULT_BASE_URL = "https://api.concordex.dev"
+DEFAULT_BASE_URL = "https://api.dmzagent.com"
 DEFAULT_TIMEOUT  = 10.0
-_USER_AGENT      = "concordex-concordia-python/0.6.0"
+_USER_AGENT      = "dmzagent-concordia-python/0.6.0"
 _MCP_PATH        = "/mcp/v1"
 _PROTOCOL        = "1.0"
 
@@ -305,7 +305,7 @@ class ConcordiaClient:
     `__enter__`/`__exit__` so it can be used as a context manager;
     call `.close()` explicitly otherwise to release the HTTP pool.
 
-    Parameters mirror the agent-stream `Concordex` client for
+    Parameters mirror the agent-stream `DMZAgent` client for
     consistency: `api_key` (required, must start with `ck_`),
     `base_url`, `timeout`, `user_agent`. A `transport` kwarg is
     accepted for testing (pass a fake httpx transport to bypass the
@@ -321,15 +321,15 @@ class ConcordiaClient:
         user_agent: str | None = None,
         transport: httpx.BaseTransport | None = None,
     ) -> None:
-        key = api_key or os.environ.get("CONCORDEX_API_KEY", "")
+        key = api_key or os.environ.get("DMZAGENT_API_KEY", "")
         if not key:
             raise ConcordiaError(
-                "api_key required (pass api_key=… or set CONCORDEX_API_KEY)"
+                "api_key required (pass api_key=… or set DMZAGENT_API_KEY)"
             )
         if not key.startswith("ck_"):
             raise ConcordiaError(
                 "api_key must start with 'ck_' — got something else; "
-                "double-check you copied a Concordex key, not a different "
+                "double-check you copied a DMZAgent key, not a different "
                 "service's token"
             )
         self._api_key  = key
@@ -443,9 +443,9 @@ class ConcordiaClient:
             raise ConcordiaProtocolError(
                 f"tools/call {name} returned non-object: {type(result).__name__}"
             )
-        # Prefer the typed `_data` field (Concordex extension); fall
+        # Prefer the typed `_data` field (DMZAgent extension); fall
         # back to parsing the canonical `content[].text` JSON if it's
-        # missing (defensive — should always be present on a Concordex
+        # missing (defensive — should always be present on a DMZAgent
         # server).
         if "_data" in result and isinstance(result["_data"], dict):
             return result["_data"]

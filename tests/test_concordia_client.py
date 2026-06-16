@@ -1,4 +1,4 @@
-"""Tests for `concordex.concordia` — the MCP 1.0 governance client.
+"""Tests for `dmzagent.concordia` — the MCP 1.0 governance client.
 
 Uses httpx.MockTransport to stub the Concordia server. We don't
 spin up the real prothinker-server here; we verify the client's
@@ -17,7 +17,7 @@ from typing import Any, Callable
 import httpx
 import pytest
 
-from concordex.concordia import (
+from dmzagent.concordia import (
     ConcordiaClient,
     ConcordiaError,
     ConcordiaAuthError,
@@ -137,7 +137,7 @@ def client(fake: FakeConcordia) -> ConcordiaClient:
 
 
 def test_requires_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("CONCORDEX_API_KEY", raising=False)
+    monkeypatch.delenv("DMZAGENT_API_KEY", raising=False)
     with pytest.raises(ConcordiaError) as ei:
         ConcordiaClient()
     assert "api_key required" in str(ei.value)
@@ -150,7 +150,7 @@ def test_rejects_non_ck_key() -> None:
 
 
 def test_reads_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("CONCORDEX_API_KEY", "ck_from_env")
+    monkeypatch.setenv("DMZAGENT_API_KEY", "ck_from_env")
     c = ConcordiaClient(transport=httpx.MockTransport(FakeConcordia()))
     assert c._api_key == "ck_from_env"
 
@@ -404,7 +404,7 @@ def test_workspace_canons(fake: FakeConcordia, client: ConcordiaClient) -> None:
         "count": 1,
         "canons": [{
             "canon_id": "cn_compliance", "name": "Compliance Canon",
-            "category": "compliance", "author_name": "Concordex",
+            "category": "compliance", "author_name": "DMZAgent",
             "latest_version": "1.2.0", "short_description": "SOC 2 + EU AI Act",
             "icon_url": None, "enabled": True, "installed_at": "2026-04-01T00:00:00Z",
         }],
@@ -502,7 +502,7 @@ def test_unknown_app_code_falls_back_to_base(
     fake: FakeConcordia, client: ConcordiaClient,
 ) -> None:
     def _tools_call(params: dict) -> dict:
-        raise _AppError(-32099, "unknown_concordex_error", "made up")
+        raise _AppError(-32099, "unknown_dmzagent_error", "made up")
     fake.handle("tools/call", _tools_call)
     with pytest.raises(ConcordiaError) as ei:
         client.enforce_covenant(subject_id="x", action_kind="y")

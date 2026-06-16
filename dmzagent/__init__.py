@@ -1,6 +1,6 @@
-"""Concordex — Python SDK.
+"""DMZAgent — Python SDK.
 
-Concordex is the codex of trust between minds: a reference work that
+DMZAgent is the codex of trust between minds: a reference work that
 indexes how agents reveal themselves (Anima), how they move under
 conditions (Augur), and how trust between them is sustained
 (Concordia). This SDK is the customer-facing surface for streaming
@@ -8,9 +8,9 @@ agent events and gating actions through circuit breakers.
 
 Quick start:
 
-    from concordex import Concordex
+    from dmzagent import DMZAgent
 
-    cx = Concordex(api_key="ck_...")
+    cx = DMZAgent(api_key="ck_...")
 
     cx.subject_says(
         agent_subject_id="user:ws:bot",
@@ -33,39 +33,59 @@ Or with the high-level Conversation handle:
         with conv.guard("user:ws:bot", raise_on_open=True):
             conv.tool_call("user:ws:bot", "refund.issue", {"amount": 99})
 
-This SDK implements the surface defined in concordex-sdk-spec at the
+This SDK implements the surface defined in dmzagent-sdk-spec at the
 version recorded in `__spec_version__`. See sdk-spec.md for the
 language-agnostic contract.
 """
-from .client import Concordex, EVENT_KINDS
+from .client import DMZAgent, EVENT_KINDS
 from .conversation import Conversation
 from .errors import (
     AuthError,
     CBOpenError,
-    ConcordexError,
+    DMZAgentError,
     PermissionError,
     ServerError,
     ValidationError,
 )
-from .models import CheckResult, EmitResult
+from .models import (
+    CaptureResult,
+    CheckResult,
+    DivisionConfig,
+    EmitResult,
+    NotificationPrefs,
+    OutcomeResult,
+    ReviewEvent,
+)
+from .subjects import (
+    is_canonical_subject_id,
+    slugify_subject,
+    subject_for_division,
+    subject_id_for_division,
+    subject_type_from_subject_id,
+)
 from .webhook import verify_webhook_signature
 
-# concordex.concordia — MCP 1.0 governance client (#218 / MCP-1.4).
+# dmzagent.concordia — MCP 1.0 governance client (#218 / MCP-1.4).
 # Surfaced as a submodule attribute so callers write
-# `from concordex.concordia import ConcordiaClient`. Top-level import
+# `from dmzagent.concordia import ConcordiaClient`. Top-level import
 # stays cheap — the submodule imports lazily on attribute access.
 from . import concordia  # noqa: F401
 
 __version__      = "0.6.0"
-__spec_version__ = "0.5.0"   # agent-stream surface still at spec v0.5.0
+__spec_version__ = "0.6.0"
 
 __all__ = [
-    "Concordex",
+    "DMZAgent",
     "Conversation",
+    "CaptureResult",
     "CheckResult",
+    "DivisionConfig",
     "EmitResult",
+    "NotificationPrefs",
+    "OutcomeResult",
+    "ReviewEvent",
     "EVENT_KINDS",
-    "ConcordexError",
+    "DMZAgentError",
     "AuthError",
     "PermissionError",
     "ValidationError",
