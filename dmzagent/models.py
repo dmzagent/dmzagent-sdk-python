@@ -217,3 +217,184 @@ class ReviewEvent:
             occurred_at  = data.get("occurred_at", ""),
             raw          = data,
         )
+
+
+# ---------- Logic Canons (rulebook-as-code, spec Phase 14.7) ----------
+
+
+@dataclass(frozen=True)
+class LogicCanonVersion:
+    """One immutable, integer-versioned rulebook publication."""
+
+    version: int
+    logic_canon_id: str | None = None
+    n_rules: int | None = None
+    changelog: str | None = None
+    published_at: str | None = None
+    rulebook: dict | None = None
+    raw: dict = field(default_factory=dict)
+
+    @classmethod
+    def from_response(cls, data: dict) -> "LogicCanonVersion":
+        return cls(
+            version=int(data.get("version") or 0),
+            logic_canon_id=data.get("logic_canon_id"),
+            n_rules=data.get("n_rules"),
+            changelog=data.get("changelog"),
+            published_at=data.get("published_at"),
+            rulebook=data.get("rulebook"),
+            raw=data,
+        )
+
+
+@dataclass(frozen=True)
+class LogicCanon:
+    """A private, vendor-scoped Logic Canon (rulebook artifact)."""
+
+    logic_canon_id: str
+    slug: str | None = None
+    name: str | None = None
+    description: str | None = None
+    status: str | None = None          # draft | published | unpublished
+    latest_version: int | None = None
+    versions: tuple[LogicCanonVersion, ...] | None = None
+    raw: dict = field(default_factory=dict)
+
+    @classmethod
+    def from_response(cls, data: dict) -> "LogicCanon":
+        versions = None
+        if isinstance(data.get("versions"), list):
+            versions = tuple(
+                LogicCanonVersion.from_response(v) for v in data["versions"]
+            )
+        return cls(
+            logic_canon_id=data.get("logic_canon_id") or "",
+            slug=data.get("slug"),
+            name=data.get("name"),
+            description=data.get("description"),
+            status=data.get("status"),
+            latest_version=data.get("latest_version"),
+            versions=versions,
+            raw=data,
+        )
+
+
+@dataclass(frozen=True)
+class LogicCanonInstall:
+    """A Logic Canon pinned into a workspace at one immutable version.
+
+    ``status``/``detail`` are populated on the health surface:
+    ok | missing_bytes | compile_error.
+    """
+
+    logic_canon_id: str
+    version: int | None = None
+    workspace_id: str | None = None
+    slug: str | None = None
+    name: str | None = None
+    installed_by: str | None = None
+    installed_at: str | None = None
+    status: str | None = None
+    detail: str | None = None
+    raw: dict = field(default_factory=dict)
+
+    @classmethod
+    def from_response(cls, data: dict) -> "LogicCanonInstall":
+        return cls(
+            logic_canon_id=data.get("logic_canon_id") or "",
+            version=data.get("version"),
+            workspace_id=data.get("workspace_id"),
+            slug=data.get("slug"),
+            name=data.get("name"),
+            installed_by=data.get("installed_by"),
+            installed_at=data.get("installed_at"),
+            status=data.get("status"),
+            detail=data.get("detail"),
+            raw=data,
+        )
+
+
+@dataclass(frozen=True)
+class LogicInstallHealth:
+    """Install health for one workspace — the fail-open alert surface.
+
+    ``ok is False`` means at least one installed control is NOT
+    evaluating (published bytes missing or no longer compiling); treat
+    it as an operational alarm.
+    """
+
+    workspace_id: str
+    ok: bool
+    broken: int
+    installs: tuple[LogicCanonInstall, ...]
+    raw: dict = field(default_factory=dict)
+
+    @classmethod
+    def from_response(cls, data: dict) -> "LogicInstallHealth":
+        installs = tuple(
+            LogicCanonInstall.from_response(i)
+            for i in (data.get("installs") or [])
+        )
+        return cls(
+            workspace_id=data.get("workspace_id") or "",
+            ok=bool(data.get("ok")),
+            broken=int(data.get("broken") or 0),
+            installs=installs,
+            raw=data,
+        )
+
+
+@dataclass(frozen=True)
+class RulebookValidation:
+    """Compile-only rulebook validation (CI / pre-publish lint)."""
+
+    valid: bool
+    error: str | None = None
+    n_rules: int | None = None
+    n_stateless: int | None = None
+    n_stateful: int | None = None
+    raw: dict = field(default_factory=dict)
+
+    @classmethod
+    def from_response(cls, data: dict) -> "RulebookValidation":
+        return cls(
+            valid=bool(data.get("valid")),
+            error=data.get("error"),
+            n_rules=data.get("n_rules"),
+            n_stateless=data.get("n_stateless"),
+            n_stateful=data.get("n_stateful"),
+            raw=data,
+        )
+
+
+@dataclass(frozen=True)
+class LogicEventAck:
+    """Ack from the live logic door — one evaluated event (202)."""
+
+    accepted: bool
+    workspace_id: str
+    subject_id: str
+    n_logic_pass: int = 0
+    n_deferred: int = 0
+    fired: tuple[dict, ...] = ()
+    escalations: tuple[dict, ...] = ()
+    dispositions: int = 0
+    emitted_frames: int = 0
+    expected_loss_avoided: float = 0.0
+    raw: dict = field(default_factory=dict)
+
+    @classmethod
+    def from_response(cls, data: dict) -> "LogicEventAck":
+        return cls(
+            accepted=bool(data.get("accepted")),
+            workspace_id=data.get("workspace_id") or "",
+            subject_id=data.get("subject_id") or "",
+            n_logic_pass=int(data.get("n_logic_pass") or 0),
+            n_deferred=int(data.get("n_deferred") or 0),
+            fired=tuple(data.get("fired") or ()),
+            escalations=tuple(data.get("escalations") or ()),
+            dispositions=int(data.get("dispositions") or 0),
+            emitted_frames=int(data.get("emitted_frames") or 0),
+            expected_loss_avoided=float(data.get("expected_loss_avoided") or 0.0),
+            raw=data,
+        )

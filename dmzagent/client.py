@@ -67,8 +67,14 @@ from .models import (
     CheckResult,
     DivisionConfig,
     EmitResult,
+    LogicCanon,
+    LogicCanonInstall,
+    LogicCanonVersion,
+    LogicEventAck,
+    LogicInstallHealth,
     NotificationPrefs,
     OutcomeResult,
+    RulebookValidation,
 )
 
 logger = logging.getLogger("dmzagent")
@@ -77,6 +83,11 @@ logger = logging.getLogger("dmzagent")
 _DEFAULT_BASE_URL = "https://api.dmzagent.com"
 _DEFAULT_TIMEOUT_S = 10.0
 _SPEC_VERSION = "0.6.0"
+
+
+def _require_id(value: Any, name: str) -> None:
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"{name} is required")
 
 
 # Event kinds the agent_stream endpoint accepts. Mirrors
@@ -501,6 +512,145 @@ class DMZAgent:
         return DivisionConfig.from_response(data)
 
     # ===================================================================== #
+    # Logic Canons — /v1/logic-canons (rulebook-as-code, spec Phase 14.7)
+    # ===================================================================== #
+
+    def create_logic_canon(
+        self,
+        *,
+        name: str,
+        slug: str | None = None,
+        description: str | None = None,
+    ) -> LogicCanon:
+        """Create a draft Logic Canon — a private, vendor-scoped rulebook
+        artifact. Publish versions with :meth:`publish_logic_canon_version`.
+        """
+        if not name or not name.strip():
+            raise ValueError("name is required")
+        body: dict = {"name": name.strip()}
+        if slug:
+            body["slug"] = slug
+        if description:
+            body["description"] = description
+        return LogicCanon.from_response(self._post_json("/v1/logic-canons", body))
+
+    def list_logic_canons(self, *, status: str | None = None) -> list[LogicCanon]:
+        """List the caller's vendor's Logic Canons (never anyone else's)."""
+        qs = f"?status={status}" if status else ""
+        data = self._get_json(f"/v1/logic-canons{qs}")
+        return [LogicCanon.from_response(c) for c in data.get("logic_canons") or []]
+
+    def get_logic_canon(self, logic_canon_id: str) -> LogicCanon:
+        """Fetch one Logic Canon (includes its version list)."""
+        _require_id(logic_canon_id, "logic_canon_id")
+        return LogicCanon.from_response(
+            self._get_json(f"/v1/logic-canons/{logic_canon_id}"))
+
+    def publish_logic_canon_version(
+        self,
+        logic_canon_id: str,
+        rulebook: dict,
+        *,
+        changelog: str | None = None,
+    ) -> LogicCanonVersion:
+        """Publish a rulebook as the canon's next immutable version.
+
+        The server compiles the rulebook before storing — an invalid
+        rulebook is rejected (:class:`ValidationError`) and never lands.
+        """
+        _require_id(logic_canon_id, "logic_canon_id")
+        if not isinstance(rulebook, dict):
+            raise ValueError("rulebook must be a dict")
+        body: dict = {"rulebook": rulebook}
+        if changelog:
+            body["changelog"] = changelog
+        return LogicCanonVersion.from_response(
+            self._post_json(f"/v1/logic-canons/{logic_canon_id}/versions", body))
+
+    def list_logic_canon_versions(self, logic_canon_id: str) -> list[LogicCanonVersion]:
+        """List a canon's published versions."""
+        _require_id(logic_canon_id, "logic_canon_id")
+        data = self._get_json(f"/v1/logic-canons/{logic_canon_id}/versions")
+        return [LogicCanonVersion.from_response(v) for v in data.get("versions") or []]
+
+    def get_logic_canon_version(self, logic_canon_id: str, version: int) -> LogicCanonVersion:
+        """Fetch one version, including the rulebook document itself."""
+        _require_id(logic_canon_id, "logic_canon_id")
+        if not isinstance(version, int) or version < 1:
+            raise ValueError("version must be a positive integer")
+        return LogicCanonVersion.from_response(
+            self._get_json(f"/v1/logic-canons/{logic_canon_id}/versions/{version}"))
+
+    def unpublish_logic_canon(self, logic_canon_id: str) -> LogicCanon:
+        """Delist a canon. Existing installs keep their pinned version."""
+        _require_id(logic_canon_id, "logic_canon_id")
+        return LogicCanon.from_response(
+            self._post_json(f"/v1/logic-canons/{logic_canon_id}/unpublish", {}))
+
+    def install_logic_canon(
+        self,
+        logic_canon_id: str,
+        *,
+        workspace_id: str,
+        version: int | None = None,
+    ) -> LogicCanonInstall:
+        """Install a canon into a workspace, pinned to an immutable version
+        (latest published when omitted). Cross-vendor installs are refused
+        server-side — Logic Canons are private.
+        """
+        _require_id(logic_canon_id, "logic_canon_id")
+        _require_id(workspace_id, "workspace_id")
+        body: dict = {"workspace_id": workspace_id}
+        if version is not None:
+            body["version"] = version
+        return LogicCanonInstall.from_response(
+            self._post_json(f"/v1/logic-canons/{logic_canon_id}/install", body))
+
+    def uninstall_logic_canon(self, logic_canon_id: str, *, workspace_id: str) -> None:
+        """Remove a canon from a workspace."""
+        _require_id(logic_canon_id, "logic_canon_id")
+        _require_id(workspace_id, "workspace_id")
+        self._delete_json(f"/v1/logic-canons/{logic_canon_id}/install/{workspace_id}")
+
+    def list_workspace_logic_canons(self, workspace_id: str) -> list[LogicCanonInstall]:
+        """The canons installed in a workspace (pinned versions)."""
+        _require_id(workspace_id, "workspace_id")
+        data = self._get_json(f"/v1/workspaces/{workspace_id}/logic-canons")
+        return [LogicCanonInstall.from_response(i) for i in data.get("installs") or []]
+
+    def workspace_logic_canon_health(self, workspace_id: str) -> LogicInstallHealth:
+        """Install health for a workspace — the fail-open alert.
+
+        ``ok is False`` means an installed control is NOT evaluating;
+        treat it as an operational alarm, not an informational flag.
+        """
+        _require_id(workspace_id, "workspace_id")
+        return LogicInstallHealth.from_response(
+            self._get_json(f"/v1/workspaces/{workspace_id}/logic-canons/health"))
+
+    def validate_rulebook(self, rulebook: dict) -> RulebookValidation:
+        """Compile-only rulebook validation — the CI lint. Nothing is
+        stored; a rulebook that fails here would be rejected at publish."""
+        if not isinstance(rulebook, dict):
+            raise ValueError("rulebook must be a dict")
+        return RulebookValidation.from_response(
+            self._post_json("/v1/logic-canons/validate", {"rulebook": rulebook}))
+
+    def emit_logic_event(self, *, workspace_id: str, event: dict) -> LogicEventAck:
+        """Push one event through the live logic door — evaluated against
+        the workspace's installed Logic Canons (metered, guarded,
+        responded). ``event["subject_id"]`` must be a canonical subject in
+        the workspace's division.
+        """
+        _require_id(workspace_id, "workspace_id")
+        if not isinstance(event, dict) or not event:
+            raise ValueError("event must be a non-empty dict")
+        if not isinstance(event.get("subject_id"), str) or not event["subject_id"]:
+            raise ValueError("event['subject_id'] (canonical subject id) is required")
+        return LogicEventAck.from_response(
+            self._post_json("/v1/logic/events", {"workspace_id": workspace_id, "event": event}))
+
+    # ===================================================================== #
     # Resource management
     # ===================================================================== #
 
@@ -548,6 +698,16 @@ class DMZAgent:
         url = f"{self._base_url}{path}"
         try:
             resp = self._client.post(url, json=body, headers=extra_headers)
+        except httpx.TimeoutException as e:
+            raise ServerError(f"timeout calling {path}", body=str(e)) from e
+        except httpx.RequestError as e:
+            raise ServerError(f"network error calling {path}: {e}") from e
+        return self._handle(resp, path)
+
+    def _delete_json(self, path: str) -> dict:
+        url = f"{self._base_url}{path}"
+        try:
+            resp = self._client.delete(url)
         except httpx.TimeoutException as e:
             raise ServerError(f"timeout calling {path}", body=str(e)) from e
         except httpx.RequestError as e:
