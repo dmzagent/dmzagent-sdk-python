@@ -42,7 +42,7 @@ workspace_id on the wire.
 Default base_url: `https://api.dmzagent.com`. Customers running
 against staging override with `DMZAgent(api_key=…, base_url="https://staging.api.eastern-shore-solutions.com")`.
 
-This module implements spec version 0.6.0 — see sdk-spec.md in
+This module implements spec version 0.7.0 — see sdk-spec.md in
 dmzagent-sdk-spec for the canonical surface.
 """
 from __future__ import annotations
@@ -59,6 +59,7 @@ from .errors import (
     CBOpenError,
     DMZAgentError,
     PermissionError,
+    RateLimitError,
     ServerError,
     ValidationError,
 )
@@ -82,7 +83,22 @@ logger = logging.getLogger("dmzagent")
 
 _DEFAULT_BASE_URL = "https://api.dmzagent.com"
 _DEFAULT_TIMEOUT_S = 10.0
-_SPEC_VERSION = "0.6.0"
+_SPEC_VERSION = "0.7.0"
+
+
+def _parse_retry_after(value: str | None) -> int | None:
+    """Parse a ``Retry-After`` header in delta-seconds form.
+
+    Returns ``None`` when the header is absent or unparseable — the SDK
+    never guesses a wait time.
+    """
+    if value is None:
+        return None
+    try:
+        seconds = int(value.strip())
+    except (ValueError, AttributeError):
+        return None
+    return seconds if seconds >= 0 else None
 
 
 def _require_id(value: Any, name: str) -> None:
@@ -736,10 +752,16 @@ class DMZAgent:
                 "API key lacks required scope for this operation",
                 status_code=resp.status_code, body=body,
             )
-        if resp.status_code == 400:
+        if resp.status_code in (400, 422):
             raise ValidationError(
                 f"server rejected request to {path}: {body!r}",
                 status_code=resp.status_code, body=body,
+            )
+        if resp.status_code == 429:
+            raise RateLimitError(
+                f"rate limited by {path}: {body!r}",
+                status_code=resp.status_code, body=body,
+                retry_after=_parse_retry_after(resp.headers.get("Retry-After")),
             )
         if resp.status_code >= 500:
             raise ServerError(

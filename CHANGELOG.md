@@ -1,5 +1,51 @@
 # Changelog
 
+## [0.7.0] — 2026-07-10
+
+DX-9 harmonization release — aligns the Python SDK with
+`dmzagent-sdk-spec` v0.7.0 (error taxonomy) and the server's
+LC-P3..P6 wire changes, per the Logic Canon spec-review §3 mandates.
+
+### Added
+- `RateLimitError` — new exception for HTTP 429 with a `retry_after`
+  attribute parsed from the `Retry-After` header (delta-seconds;
+  `None` when absent or unparseable). The SDK never sleeps or retries
+  automatically — surface the value and let the caller decide.
+- HTTP 422 now maps to `ValidationError` (well-formed but
+  unprocessable — bad event / rulebook). Previously 422 and 429 both
+  collapsed into the generic `DMZAgentError`.
+- `FiredRule` and `Escalation` frozen dataclasses with the house
+  `raw` wire-dict passthrough. `band`/`lane`/`status` fields remain
+  open strings, never enums.
+- `LogicEventAck` honest-ack fields (server LC-P3):
+  `degraded: bool`, `responded: bool`, `installs_evaluated: int`,
+  `installs_total: int` — defaulting to `False`/`0` when absent
+  (older servers).
+- `LogicCanon.vendor_id` (`str | None`) — parity with the TypeScript
+  SDK.
+- `LogicInstallHealthRow` — the health-surface row model
+  (`status` = ok | missing_bytes | compile_error, plus `detail`).
+- Contract-test runner passes fixture `headers` through to the
+  stubbed response and asserts `expected_retry_after` against
+  `RateLimitError.retry_after` (spec fixtures
+  `422_unprocessable_validation`, `429_rate_limited_retry_after`,
+  `429_rate_limited_no_header`).
+
+### Changed
+- **Breaking:** `LogicEventAck.fired` / `.escalations` are now tuples
+  of `FiredRule` / `Escalation` DTOs instead of raw dicts — consumers
+  indexing `ack.fired[0]["rule_id"]` must switch to
+  `ack.fired[0].rule_id` (the wire dict remains on `.raw`).
+- **Breaking:** `LogicInstallHealth.installs` now contains
+  `LogicInstallHealthRow` items; `LogicCanonInstall` is a pure deploy
+  record (lifecycle `status`, no `detail` field) — the two previously
+  conflated enums are split per spec-review §3 / P6.
+- Spec version pin bumped to `0.7.0` (`pyproject.toml`
+  `[tool.dmzagent] spec-version`, `__spec_version__`, User-Agent).
+- Server list responses renamed `total` → `count` (LC-P6); the SDK
+  never read `total`, so this is test-fixture-only. Workspace
+  install-list rows no longer carry `vendor_id`.
+
 ## [0.6.0] — 2026-06-02
 
 ### Added

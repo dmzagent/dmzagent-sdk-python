@@ -293,7 +293,7 @@ _ERROR_MAP: dict[int, type[ConcordiaError]] = {
 
 DEFAULT_BASE_URL = "https://api.dmzagent.com"
 DEFAULT_TIMEOUT  = 10.0
-_USER_AGENT      = "dmzagent-concordia-python/0.6.0"
+_USER_AGENT      = "dmzagent-concordia-python/0.7.0"
 _MCP_PATH        = "/mcp/v1"
 _PROTOCOL        = "1.0"
 

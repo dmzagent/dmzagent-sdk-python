@@ -252,10 +252,11 @@ class LogicCanon:
     """A private, vendor-scoped Logic Canon (rulebook artifact)."""
 
     logic_canon_id: str
+    vendor_id: str | None = None
     slug: str | None = None
     name: str | None = None
     description: str | None = None
-    status: str | None = None          # draft | published | unpublished
+    status: str | None = None          # open string: draft | published | unpublished
     latest_version: int | None = None
     versions: tuple[LogicCanonVersion, ...] | None = None
     raw: dict = field(default_factory=dict)
@@ -269,6 +270,7 @@ class LogicCanon:
             )
         return cls(
             logic_canon_id=data.get("logic_canon_id") or "",
+            vendor_id=data.get("vendor_id"),
             slug=data.get("slug"),
             name=data.get("name"),
             description=data.get("description"),
@@ -283,8 +285,10 @@ class LogicCanon:
 class LogicCanonInstall:
     """A Logic Canon pinned into a workspace at one immutable version.
 
-    ``status``/``detail`` are populated on the health surface:
-    ok | missing_bytes | compile_error.
+    Pure deploy record. ``status`` is the canon's *lifecycle* state
+    (open string: draft | published | unpublished). Health of the
+    install (is it actually evaluating?) lives on the health surface —
+    see :class:`LogicInstallHealthRow`.
     """
 
     logic_canon_id: str
@@ -294,8 +298,7 @@ class LogicCanonInstall:
     name: str | None = None
     installed_by: str | None = None
     installed_at: str | None = None
-    status: str | None = None
-    detail: str | None = None
+    status: str | None = None          # lifecycle: draft | published | unpublished
     raw: dict = field(default_factory=dict)
 
     @classmethod
@@ -308,6 +311,36 @@ class LogicCanonInstall:
             name=data.get("name"),
             installed_by=data.get("installed_by"),
             installed_at=data.get("installed_at"),
+            status=data.get("status"),
+            raw=data,
+        )
+
+
+@dataclass(frozen=True)
+class LogicInstallHealthRow:
+    """One install's health on the fail-open alert surface.
+
+    ``status`` is the *health* state (open string:
+    ok | missing_bytes | compile_error); ``detail`` carries the
+    compile error when present. Distinct from the deploy record
+    (:class:`LogicCanonInstall`), whose ``status`` is a lifecycle enum.
+    """
+
+    logic_canon_id: str
+    version: int | None = None
+    slug: str | None = None
+    name: str | None = None
+    status: str | None = None          # health: ok | missing_bytes | compile_error
+    detail: str | None = None
+    raw: dict = field(default_factory=dict)
+
+    @classmethod
+    def from_response(cls, data: dict) -> "LogicInstallHealthRow":
+        return cls(
+            logic_canon_id=data.get("logic_canon_id") or "",
+            version=data.get("version"),
+            slug=data.get("slug"),
+            name=data.get("name"),
             status=data.get("status"),
             detail=data.get("detail"),
             raw=data,
@@ -326,13 +359,13 @@ class LogicInstallHealth:
     workspace_id: str
     ok: bool
     broken: int
-    installs: tuple[LogicCanonInstall, ...]
+    installs: tuple[LogicInstallHealthRow, ...]
     raw: dict = field(default_factory=dict)
 
     @classmethod
     def from_response(cls, data: dict) -> "LogicInstallHealth":
         installs = tuple(
-            LogicCanonInstall.from_response(i)
+            LogicInstallHealthRow.from_response(i)
             for i in (data.get("installs") or [])
         )
         return cls(
@@ -368,19 +401,76 @@ class RulebookValidation:
 
 
 @dataclass(frozen=True)
+class FiredRule:
+    """A rule that fired during logic-door evaluation."""
+
+    rule_id: str
+    raw: dict = field(default_factory=dict)
+
+    @classmethod
+    def from_response(cls, data: dict) -> "FiredRule":
+        return cls(
+            rule_id=data.get("rule_id") or "",
+            raw=data,
+        )
+
+
+@dataclass(frozen=True)
+class Escalation:
+    """An escalation raised during logic-door evaluation.
+
+    ``band`` / ``lane`` are open strings — never enums — so new server
+    values pass through without breaking consumers.
+    """
+
+    rule_id: str
+    band: str | None = None
+    lane: str | None = None
+    raw: dict = field(default_factory=dict)
+
+    @classmethod
+    def from_response(cls, data: dict) -> "Escalation":
+        return cls(
+            rule_id=data.get("rule_id") or "",
+            band=data.get("band"),
+            lane=data.get("lane"),
+            raw=data,
+        )
+
+
+@dataclass(frozen=True)
 class LogicEventAck:
-    """Ack from the live logic door — one evaluated event (202)."""
+    """Ack from the live logic door — one evaluated event (202).
+
+    Honest-ack fields (spec 0.7.0 / server LC-P3):
+
+    - ``degraded`` — True when at least one installed control did NOT
+      evaluate (fail-open). ``fired == ()`` with ``degraded is True``
+      is an alarm, not a clean pass.
+    - ``responded`` — True when the best-effort respond step ran; when
+      False, ``dispositions`` / ``emitted_frames`` /
+      ``expected_loss_avoided`` read 0 because responding failed, not
+      because nothing happened.
+    - ``installs_evaluated`` / ``installs_total`` — evaluated-vs-installed
+      counts backing ``degraded``.
+
+    All four default to False/0 when absent (older servers).
+    """
 
     accepted: bool
     workspace_id: str
     subject_id: str
     n_logic_pass: int = 0
     n_deferred: int = 0
-    fired: tuple[dict, ...] = ()
-    escalations: tuple[dict, ...] = ()
+    fired: tuple[FiredRule, ...] = ()
+    escalations: tuple[Escalation, ...] = ()
     dispositions: int = 0
     emitted_frames: int = 0
     expected_loss_avoided: float = 0.0
+    degraded: bool = False
+    responded: bool = False
+    installs_evaluated: int = 0
+    installs_total: int = 0
     raw: dict = field(default_factory=dict)
 
     @classmethod
@@ -391,10 +481,18 @@ class LogicEventAck:
             subject_id=data.get("subject_id") or "",
             n_logic_pass=int(data.get("n_logic_pass") or 0),
             n_deferred=int(data.get("n_deferred") or 0),
-            fired=tuple(data.get("fired") or ()),
-            escalations=tuple(data.get("escalations") or ()),
+            fired=tuple(
+                FiredRule.from_response(f) for f in (data.get("fired") or ())
+            ),
+            escalations=tuple(
+                Escalation.from_response(e) for e in (data.get("escalations") or ())
+            ),
             dispositions=int(data.get("dispositions") or 0),
             emitted_frames=int(data.get("emitted_frames") or 0),
             expected_loss_avoided=float(data.get("expected_loss_avoided") or 0.0),
+            degraded=bool(data.get("degraded", False)),
+            responded=bool(data.get("responded", False)),
+            installs_evaluated=int(data.get("installs_evaluated") or 0),
+            installs_total=int(data.get("installs_total") or 0),
             raw=data,
         )

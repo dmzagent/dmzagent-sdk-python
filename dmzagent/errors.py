@@ -8,7 +8,10 @@ failures.
   DMZAgentError                base
     ├── AuthError               API key invalid, expired, revoked
     ├── PermissionError         API key valid but lacks the needed scope
-    ├── ValidationError         server rejected the payload as malformed
+    ├── ValidationError         server rejected the payload (400 malformed,
+    │                           422 well-formed but unprocessable)
+    ├── RateLimitError          429 — rate cap reached; retry after
+    │                           `retry_after` seconds (caller's decision)
     ├── ServerError             5xx from DMZAgent; safe to retry
     └── CBOpenError             cb.check() returned open — action blocked
 
@@ -39,7 +42,32 @@ class PermissionError(DMZAgentError):  # noqa: A001 — intentional shadowing
 
 
 class ValidationError(DMZAgentError):
-    """The server returned 400 — the payload was malformed."""
+    """The server rejected the payload — 400 (malformed) or 422
+    (well-formed but unprocessable, e.g. a bad event or rulebook)."""
+
+
+class RateLimitError(DMZAgentError):
+    """The server returned 429 — a rate cap was reached.
+
+    Attributes:
+        retry_after  seconds until retrying can succeed, parsed from the
+                     response's ``Retry-After`` header (delta-seconds
+                     form); ``None`` when the header is absent or
+                     unparseable. The SDK never sleeps or retries
+                     automatically — surface the value and let the
+                     caller decide.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        status_code: int | None = None,
+        body: dict | str | None = None,
+        retry_after: int | None = None,
+    ) -> None:
+        super().__init__(message, status_code=status_code, body=body)
+        self.retry_after = retry_after
 
 
 class ServerError(DMZAgentError):

@@ -44,6 +44,7 @@ from .errors import (
     CBOpenError,
     DMZAgentError,
     PermissionError,
+    RateLimitError,
     ServerError,
     ValidationError,
 )
@@ -52,11 +53,14 @@ from .models import (
     CheckResult,
     DivisionConfig,
     EmitResult,
+    Escalation,
+    FiredRule,
     LogicCanon,
     LogicCanonInstall,
     LogicCanonVersion,
     LogicEventAck,
     LogicInstallHealth,
+    LogicInstallHealthRow,
     NotificationPrefs,
     OutcomeResult,
     ReviewEvent,
@@ -77,8 +81,8 @@ from .webhook import verify_webhook_signature
 # stays cheap — the submodule imports lazily on attribute access.
 from . import concordia  # noqa: F401
 
-__version__      = "0.6.0"
-__spec_version__ = "0.6.0"
+__version__      = "0.7.0"
+__spec_version__ = "0.7.0"
 
 __all__ = [
     "DMZAgent",
@@ -94,13 +98,17 @@ __all__ = [
     "LogicCanonVersion",
     "LogicCanonInstall",
     "LogicInstallHealth",
+    "LogicInstallHealthRow",
     "RulebookValidation",
     "LogicEventAck",
+    "FiredRule",
+    "Escalation",
     "EVENT_KINDS",
     "DMZAgentError",
     "AuthError",
     "PermissionError",
     "ValidationError",
+    "RateLimitError",
     "ServerError",
     "CBOpenError",
     "verify_webhook_signature",

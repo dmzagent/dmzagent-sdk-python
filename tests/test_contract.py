@@ -28,6 +28,7 @@ from dmzagent import (
     DMZAgent,
     DMZAgentError,
     PermissionError,
+    RateLimitError,
     ServerError,
     ValidationError,
     verify_webhook_signature,
@@ -61,6 +62,7 @@ EXC_MAP = {
     "ValidationError":                ValidationError,
     "AuthError":                      AuthError,
     "PermissionError":                PermissionError,
+    "RateLimitError":                 RateLimitError,
     "ServerError":                    ServerError,
     "DMZAgentError":                 DMZAgentError,
     "CBOpenError":                    CBOpenError,
@@ -206,8 +208,13 @@ def test_signature_vector(fx):
 def test_error_mapping(fx, stub_transport, captured):
     body = fx["body"]
     response_body = body if isinstance(body, dict) else {"detail": body}
+    # Fixtures may carry response headers (e.g. Retry-After for 429);
+    # the spec requires runners to pass them through to the stub.
+    response_headers = fx.get("headers") or {}
     stub_transport.set_handler(
-        lambda req: httpx.Response(fx["status"], json=response_body)
+        lambda req: httpx.Response(
+            fx["status"], json=response_body, headers=response_headers
+        )
     )
 
     client = DMZAgent(api_key="ck_test_xxxxxxxxxxxxxxxxxxxxx", transport=stub_transport)
@@ -231,3 +238,7 @@ def test_error_mapping(fx, stub_transport, captured):
         _call_method(client, fx["method"], dict(fx["args"]))
     if "expected_status_code" in fx:
         assert ei.value.status_code == fx["expected_status_code"]
+    if "expected_retry_after" in fx:
+        # JSON null → Python None: absent/unparseable header is None,
+        # never a guessed wait time.
+        assert ei.value.retry_after == fx["expected_retry_after"]
