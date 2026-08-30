@@ -25,6 +25,7 @@ import pytest
 from dmzagent import (
     AuthError,
     CBOpenError,
+    ConflictError,
     DMZAgent,
     DMZAgentError,
     PermissionError,
@@ -64,6 +65,7 @@ EXC_MAP = {
     "PermissionError":                PermissionError,
     "ServerError":                    ServerError,
     "RateLimitError":                 RateLimitError,
+    "ConflictError":                  ConflictError,
     "DMZAgentError":                 DMZAgentError,
     "CBOpenError":                    CBOpenError,
     # The spec corpus marks client-side validation as

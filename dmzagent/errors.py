@@ -73,6 +73,17 @@ class RateLimitError(DMZAgentError):
         self.retry_after = retry_after
 
 
+class ConflictError(DMZAgentError):
+    """The server returned 409 — an Idempotency-Key request is in flight.
+
+    Distinct from ServerError because it is not a transient fault: the
+    duplicate is the caller's *own* earlier request, still running. Retrying
+    the same key after a short pause replays that request's stored response
+    rather than producing a second side effect, so the caller can wait and
+    retry safely — but the SDK never does so on its own (spec §1.8).
+    """
+
+
 class ServerError(DMZAgentError):
     """The server returned 5xx. Caller may safely retry with backoff."""
 

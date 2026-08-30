@@ -19,6 +19,16 @@ from dataclasses import dataclass, field
 from typing import Any
 
 
+def _opt_bool(raw: Any) -> bool | None:
+    """A tri-state bool: True, False, or None when the server omitted it.
+
+    `bool(raw)` would fold a missing key into False, which for `livemode`
+    reads as "this is test data" — the opposite of the safe assumption when
+    the truth is simply unknown. Only a real JSON boolean is accepted.
+    """
+    return raw if isinstance(raw, bool) else None
+
+
 @dataclass(frozen=True)
 class CheckResult:
     """Return type of `DMZAgent.check()`."""
@@ -66,6 +76,10 @@ class EmitResult:
     n_workspaces:     int | None  = None
     frame_id:         str | None = None
     follow_my_data:   str | None = None
+    # True for a live key, False for a test key (ck_test_…), None when the
+    # server omitted it. Never defaulted: guessing "live" on a test key, or
+    # vice versa, is exactly the mistake this field exists to prevent.
+    livemode:         bool | None = None
     # ---- raw passthrough --------------------------------------------
     raw:              dict       = field(default_factory=dict)
 
@@ -81,6 +95,7 @@ class EmitResult:
             n_workspaces     = data.get("n_workspaces"),
             frame_id         = data.get("frame_id"),
             follow_my_data   = data.get("follow_my_data"),
+            livemode         = _opt_bool(data.get("livemode")),
             raw              = data,
         )
 
@@ -99,6 +114,7 @@ class CaptureResult:
     interaction_id:   str
     subjects:         list[str] = field(default_factory=list)
     follow_my_data:   str | None = None
+    livemode:         bool | None = None
     raw:              dict       = field(default_factory=dict)
 
     @classmethod
@@ -110,6 +126,7 @@ class CaptureResult:
             interaction_id   = data.get("interaction_id", ""),
             subjects         = data.get("subjects", []) or [],
             follow_my_data   = data.get("follow_my_data"),
+            livemode         = _opt_bool(data.get("livemode")),
             raw              = data,
         )
 
