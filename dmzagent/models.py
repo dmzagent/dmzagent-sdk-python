@@ -133,13 +133,24 @@ class CaptureResult:
 
 @dataclass(frozen=True)
 class OutcomeResult:
-    """Return type of `DMZAgent.await_outcome()`.
+    """Return type of `DMZAgent.await_outcome()` (sdk-spec.md §7.3).
 
-    Per-workspace reasoning results for a captured frame.
+    Per-workspace reasoning results for a captured frame. A frame is
+    division-scoped: it fans out to every workspace in its division and
+    produces one trace per workspace, each entry in `reasoning` naming the
+    `workspace_id` that produced it.
     """
 
     frame_id:         str
-    outcome:          str       # skipped | no_change | applied | failed
+    # Fold over `reasoning` computed server-side, with precedence
+    # failed > held > applied > no_change > skipped (§2.7). None until at
+    # least one trace exists — never guessed. This defaulted to
+    # "no_change" when the key was absent, which reported a clean result
+    # for a frame nothing had reasoned over yet.
+    outcome:          str | None = None
+    division_id:      str | None = None
+    workspace_ids:    list[str] = field(default_factory=list)
+    complete:         bool = False
     error:            dict | None = None
     tags_fired:       list[dict] = field(default_factory=list)
     reasoning:        list[dict] = field(default_factory=list)
@@ -149,15 +160,19 @@ class OutcomeResult:
 
     @classmethod
     def from_response(cls, data: dict) -> "OutcomeResult":
+        summary = data.get("summary") or {}
         return cls(
-            frame_id     = data.get("frame_id", ""),
-            outcome      = data.get("outcome", "no_change"),
-            error        = data.get("error"),
-            tags_fired   = data.get("tags_fired", []) or [],
-            reasoning    = data.get("reasoning", []) or [],
-            soul_version = data.get("soul_version"),
-            finished_at  = data.get("finished_at", ""),
-            raw          = data,
+            frame_id      = data.get("frame_id", ""),
+            outcome       = data.get("outcome"),
+            division_id   = data.get("division_id"),
+            workspace_ids = data.get("workspace_ids", []) or [],
+            complete      = bool(summary.get("complete", False)),
+            error         = data.get("error"),
+            tags_fired    = data.get("tags_fired", []) or [],
+            reasoning     = data.get("reasoning", []) or [],
+            soul_version  = data.get("soul_version"),
+            finished_at   = data.get("finished_at", ""),
+            raw           = data,
         )
 
 
