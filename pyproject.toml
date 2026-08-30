@@ -45,7 +45,7 @@ dev = [
 [tool.dmzagent]
 # Spec version this SDK implements. CI verifies the checked-out
 # dmzagent-sdk-spec tag matches this value. See sdk-spec.md §11.1.
-spec-version = "0.6.0"
+spec-version = "0.8.0"
 
 [tool.hatch.build.targets.wheel]
 packages = ["dmzagent"]

@@ -44,6 +44,8 @@ from .errors import (
     CBOpenError,
     DMZAgentError,
     PermissionError,
+    ConflictError,
+    RateLimitError,
     ServerError,
     ValidationError,
 )
@@ -89,6 +91,8 @@ __all__ = [
     "AuthError",
     "PermissionError",
     "ValidationError",
+    "ConflictError",
+    "RateLimitError",
     "ServerError",
     "CBOpenError",
     "verify_webhook_signature",

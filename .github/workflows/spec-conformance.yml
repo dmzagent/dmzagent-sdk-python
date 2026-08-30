@@ -59,7 +59,7 @@ jobs:
       - name: Check out dmzagent-sdk-spec
         uses: actions/checkout@v4
         with:
-          repository: praeceptor-thesis/dmzagent-sdk-spec
+          repository: dmzagent/dmzagent-sdk-spec
           ref: ${{ steps.spec_ref.outputs.ref }}
           path: spec
 

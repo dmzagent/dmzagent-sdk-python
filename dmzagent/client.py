@@ -42,7 +42,7 @@ workspace_id on the wire.
 Default base_url: `https://api.dmzagent.com`. Customers running
 against staging override with `DMZAgent(api_key=…, base_url="https://staging.api.eastern-shore-solutions.com")`.
 
-This module implements spec version 0.6.0 — see sdk-spec.md in
+This module implements spec version 0.8.0 — see sdk-spec.md in
 dmzagent-sdk-spec for the canonical surface.
 """
 from __future__ import annotations
@@ -57,8 +57,10 @@ import httpx
 from .errors import (
     AuthError,
     CBOpenError,
+    ConflictError,
     DMZAgentError,
     PermissionError,
+    RateLimitError,
     ServerError,
     ValidationError,
 )
@@ -71,12 +73,31 @@ from .models import (
     OutcomeResult,
 )
 
+
+def _parse_retry_after(raw: str | None) -> int | None:
+    """Seconds from a `Retry-After` header, or None.
+
+    Only the delta-seconds form is understood. RFC 9110 also permits an
+    HTTP-date, and a caller that got one would be worse served by a wrong
+    integer than by None — so anything non-numeric returns None rather than
+    guessing. The spec carries a vector for the header-absent case, which
+    lands here too.
+    """
+    if raw is None:
+        return None
+    try:
+        seconds = int(raw.strip())
+    except (ValueError, AttributeError):
+        return None
+    return seconds if seconds >= 0 else None
+
+
 logger = logging.getLogger("dmzagent")
 
 
 _DEFAULT_BASE_URL = "https://api.dmzagent.com"
 _DEFAULT_TIMEOUT_S = 10.0
-_SPEC_VERSION = "0.6.0"
+_SPEC_VERSION = "0.8.0"
 
 
 # Event kinds the agent_stream endpoint accepts. Mirrors
@@ -134,6 +155,7 @@ class DMZAgent:
         occurred_at: str | None = None,
         metadata: dict | None = None,
         async_mode: bool = False,
+        idempotency_key: str | None = None,
     ) -> EmitResult:
         """Low-level event emitter — every higher-level helper lands here.
 
@@ -165,8 +187,19 @@ class DMZAgent:
         if occurred_at:       body["occurred_at"]      = occurred_at
         if metadata:          body["metadata"]         = metadata
 
-        extra_headers = {"X-DMZAgent-Async": "true"} if async_mode else None
-        data = self._post_json("/v1/agent-stream/event", body, extra_headers=extra_headers)
+        extra_headers: dict[str, str] = {}
+        if async_mode:
+            extra_headers["X-DMZAgent-Async"] = "true"
+        # Caller-supplied only (spec 1.8). The SDK deliberately does not
+        # generate one: a key minted per call is unique per call and so
+        # deduplicates nothing, and a key derived from the payload would
+        # collapse two genuinely distinct but identical events.
+        if idempotency_key:
+            extra_headers["Idempotency-Key"] = idempotency_key
+        data = self._post_json(
+            "/v1/agent-stream/event", body,
+            extra_headers=extra_headers or None,
+        )
         return EmitResult.from_response(data)
 
     # ----- convenience wrappers around emit_event ----- #
@@ -303,6 +336,7 @@ class DMZAgent:
         speaker_role: str | None = None,
         occurred_at: str | None = None,
         metadata: dict | None = None,
+        idempotency_key: str | None = None,
     ) -> CaptureResult:
         """Capture an event in the agent stream.
 
@@ -328,7 +362,10 @@ class DMZAgent:
         if occurred_at:       body["occurred_at"]       = occurred_at
         if metadata:          body["metadata"]          = metadata
 
-        data = self._post_json("/v1/agent-stream/event", body)
+        data = self._post_json(
+            "/v1/agent-stream/event", body,
+            extra_headers={"Idempotency-Key": idempotency_key} if idempotency_key else None,
+        )
         return CaptureResult.from_response(data)
 
     # ===================================================================== #
@@ -576,10 +613,28 @@ class DMZAgent:
                 "API key lacks required scope for this operation",
                 status_code=resp.status_code, body=body,
             )
-        if resp.status_code == 400:
+        # 400 and 422 both mean "fix the request" — malformed vs parsed-but-
+        # rejected. The spec taxonomy maps both to ValidationError; status_code
+        # tells them apart for callers that care.
+        if resp.status_code in (400, 422):
             raise ValidationError(
                 f"server rejected request to {path}: {body!r}",
                 status_code=resp.status_code, body=body,
+            )
+        # 409 is the Idempotency-Key in-flight conflict (spec §1.8). Kept
+        # separate from ServerError: the duplicate is the caller's own
+        # earlier request, so retrying the same key replays its response
+        # instead of causing a second side effect.
+        if resp.status_code == 409:
+            raise ConflictError(
+                f"a request with this Idempotency-Key is already in flight on {path}",
+                status_code=resp.status_code, body=body,
+            )
+        if resp.status_code == 429:
+            raise RateLimitError(
+                f"rate limited on {path}",
+                status_code=resp.status_code, body=body,
+                retry_after=_parse_retry_after(resp.headers.get("Retry-After")),
             )
         if resp.status_code >= 500:
             raise ServerError(
