@@ -49,6 +49,64 @@ def _load(name: str) -> dict:
     return json.loads((SPEC_PATH / "contract-tests" / name).read_text())
 
 
+# --------------------------------------------------------------------------- #
+# Spec version pinning (sdk-spec.md §11.1)
+#
+# The C# SDK has carried this check since 0.5.0; Python and TypeScript never
+# did, and 0.8.1 showed what that costs. All four SDKs pinned 0.8.1 while the
+# spec's main still read 0.8.0, and C# was the only one that went red — the
+# other three reported green while being conformance-tested against a corpus
+# one version behind what they claimed to implement. A green gate that cannot
+# see the mismatch is the same failure as the checkout that sat broken for two
+# months: it passes, and it means less than it appears to.
+#
+# Deliberately in this file. The conformance workflow runs exactly
+# `pytest tests/test_contract.py`, so a check placed anywhere else would not
+# execute in the gate that matters.
+# --------------------------------------------------------------------------- #
+
+
+def test_pinned_spec_version_matches_the_checked_out_spec():
+    """The corpus under test must BE the version this SDK claims."""
+    from dmzagent.client import _SPEC_VERSION
+
+    version_file = SPEC_PATH / "VERSION"
+    assert version_file.exists(), (
+        f"the spec repo must be checked out at {SPEC_PATH} "
+        "(CI sets DMZAGENT_SPEC_PATH)"
+    )
+    assert version_file.read_text().strip() == _SPEC_VERSION, (
+        "dmzagent/client.py _SPEC_VERSION must match the spec repo's VERSION "
+        "file — otherwise this SDK is being conformance-tested against a "
+        "corpus that is not the version it advertises in its User-Agent"
+    )
+
+
+def test_pyproject_spec_version_matches_the_client_constant():
+    """Second copy of the same number, so pin it to the first.
+
+    `[tool.dmzagent] spec-version` sits in pyproject.toml above a comment
+    claiming "CI verifies the checked-out dmzagent-sdk-spec tag matches this
+    value". Nothing did. The value is not read at runtime — `_SPEC_VERSION` in
+    client.py is what reaches the wire — so the two were free to drift, which
+    is exactly how the Java SDK's User-Agent stayed at 0.6.0 through two
+    releases.
+    """
+    try:
+        import tomllib
+    except ModuleNotFoundError:  # Python < 3.11
+        import tomli as tomllib  # type: ignore[no-redef]
+
+    from dmzagent.client import _SPEC_VERSION
+
+    pyproject = Path(__file__).resolve().parent.parent / "pyproject.toml"
+    declared = tomllib.loads(pyproject.read_text())["tool"]["dmzagent"]["spec-version"]
+    assert declared == _SPEC_VERSION, (
+        "pyproject.toml [tool.dmzagent] spec-version and client.py "
+        "_SPEC_VERSION disagree; they are the same fact written twice"
+    )
+
+
 def _normalize(obj):
     """Sort keys recursively for byte-stable JSON comparison."""
     if isinstance(obj, dict):
