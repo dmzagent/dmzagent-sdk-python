@@ -28,6 +28,7 @@ from dmzagent import (
     DMZAgent,
     DMZAgentError,
     PermissionError,
+    RateLimitError,
     ServerError,
     ValidationError,
     verify_webhook_signature,
@@ -62,6 +63,7 @@ EXC_MAP = {
     "AuthError":                      AuthError,
     "PermissionError":                PermissionError,
     "ServerError":                    ServerError,
+    "RateLimitError":                 RateLimitError,
     "DMZAgentError":                 DMZAgentError,
     "CBOpenError":                    CBOpenError,
     # The spec corpus marks client-side validation as
@@ -206,8 +208,13 @@ def test_signature_vector(fx):
 def test_error_mapping(fx, stub_transport, captured):
     body = fx["body"]
     response_body = body if isinstance(body, dict) else {"detail": body}
+    # The corpus attaches response headers to some fixtures (429 carries
+    # Retry-After); forward them, or the SDK never sees what it is meant to
+    # parse and the vector passes for the wrong reason.
     stub_transport.set_handler(
-        lambda req: httpx.Response(fx["status"], json=response_body)
+        lambda req: httpx.Response(
+            fx["status"], json=response_body, headers=fx.get("headers") or {}
+        )
     )
 
     client = DMZAgent(api_key="ck_test_xxxxxxxxxxxxxxxxxxxxx", transport=stub_transport)
@@ -231,3 +238,11 @@ def test_error_mapping(fx, stub_transport, captured):
         _call_method(client, fx["method"], dict(fx["args"]))
     if "expected_status_code" in fx:
         assert ei.value.status_code == fx["expected_status_code"]
+    # Membership, not .get(): the corpus carries an explicit null case for a
+    # 429 sent without a Retry-After header, and .get() would make that
+    # indistinguishable from the field being absent.
+    if "expected_retry_after" in fx:
+        assert ei.value.retry_after == fx["expected_retry_after"], (
+            f"expected retry_after={fx['expected_retry_after']!r}, "
+            f"got {ei.value.retry_after!r}"
+        )

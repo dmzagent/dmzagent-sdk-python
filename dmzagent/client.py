@@ -59,6 +59,7 @@ from .errors import (
     CBOpenError,
     DMZAgentError,
     PermissionError,
+    RateLimitError,
     ServerError,
     ValidationError,
 )
@@ -70,6 +71,25 @@ from .models import (
     NotificationPrefs,
     OutcomeResult,
 )
+
+
+def _parse_retry_after(raw: str | None) -> int | None:
+    """Seconds from a `Retry-After` header, or None.
+
+    Only the delta-seconds form is understood. RFC 9110 also permits an
+    HTTP-date, and a caller that got one would be worse served by a wrong
+    integer than by None — so anything non-numeric returns None rather than
+    guessing. The spec carries a vector for the header-absent case, which
+    lands here too.
+    """
+    if raw is None:
+        return None
+    try:
+        seconds = int(raw.strip())
+    except (ValueError, AttributeError):
+        return None
+    return seconds if seconds >= 0 else None
+
 
 logger = logging.getLogger("dmzagent")
 
@@ -576,10 +596,19 @@ class DMZAgent:
                 "API key lacks required scope for this operation",
                 status_code=resp.status_code, body=body,
             )
-        if resp.status_code == 400:
+        # 400 and 422 both mean "fix the request" — malformed vs parsed-but-
+        # rejected. The spec taxonomy maps both to ValidationError; status_code
+        # tells them apart for callers that care.
+        if resp.status_code in (400, 422):
             raise ValidationError(
                 f"server rejected request to {path}: {body!r}",
                 status_code=resp.status_code, body=body,
+            )
+        if resp.status_code == 429:
+            raise RateLimitError(
+                f"rate limited on {path}",
+                status_code=resp.status_code, body=body,
+                retry_after=_parse_retry_after(resp.headers.get("Retry-After")),
             )
         if resp.status_code >= 500:
             raise ServerError(
