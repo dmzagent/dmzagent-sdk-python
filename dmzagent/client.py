@@ -42,7 +42,7 @@ workspace_id on the wire.
 Default base_url: `https://api.dmzagent.com`. Customers running
 against staging override with `DMZAgent(api_key=…, base_url="https://staging.api.eastern-shore-solutions.com")`.
 
-This module implements spec version 0.8.0 — see sdk-spec.md in
+This module implements spec version 0.8.1 — see sdk-spec.md in
 dmzagent-sdk-spec for the canonical surface.
 """
 from __future__ import annotations
@@ -412,20 +412,32 @@ class DMZAgent:
         frame_id: str,
         timeout: float = 30.0,
     ) -> OutcomeResult:
-        """Poll the frame story endpoint until an outcome is available.
+        """Poll the frame story endpoint until reasoning completes
+        (sdk-spec.md §5.10).
+
+        Terminates on `summary.complete` — every workspace the frame fanned
+        out to has reported, matching the `n_workspaces` on the ingest ack.
+        This previously keyed on a top-level `outcome`, which the endpoint
+        did not return at all, so the loop ran to `timeout` every time.
+
+        No `workspace_id` is sent. The story endpoint is division-scoped;
+        naming a workspace narrows the result to 1 of N perspectives and
+        makes completeness mean "that workspace finished".
 
         Backoff: start 100ms, double to max 2s, cap at `timeout`.
-        Raises ServerError with "timeout" message if exceeded.
+        Raises ServerError if the deadline passes first.
         """
+        timeout = min(timeout, 120.0)
         deadline = time.monotonic() + timeout
         delay = 0.1
         while True:
             data = self._get_json(f"/v1/frames/{frame_id}/story")
-            outcome = data.get("outcome")
-            if outcome and outcome != "pending":
+            if (data.get("summary") or {}).get("complete"):
                 return OutcomeResult.from_response(data)
             if time.monotonic() >= deadline:
-                raise ServerError("timeout")
+                raise ServerError(
+                    f"await_outcome timed out after {timeout}s for frame {frame_id}",
+                )
             time.sleep(delay)
             delay = min(delay * 2, 2.0)
 
