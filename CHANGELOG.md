@@ -1,5 +1,39 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- **Circuit-breaker state cache** (spec §4.4). `check()` is a network
+  round trip in front of a sensitive action; `cb_cache_ttl` (seconds,
+  like `timeout`) lets a repeat check on the same subject come from
+  memory instead. Off at 0, which is the default.
+
+  `cb_cache_max_entries` bounds it — the key is a subject id, so an
+  agent seeing many subjects would otherwise hold an entry for each for
+  the life of the process — and evicts least-recently-used first.
+  `check(fresh=True)` skips the cache and refreshes it; `guard()` passes
+  `fresh` through.
+- `CheckResult.cached`, `.cache_age_ms`, `.stale`. A caller recording a
+  denial has to be able to tell it read four-second-old state. The
+  server's own `latency_ms`, `route_latency_ms`, `checked_at` and `raw`
+  are left alone on a cached result — they describe the check that
+  happened.
+- `cb_cache_on_error="last_known"` serves the last known state for a
+  subject, marked `.stale`, when the check cannot reach the server. It
+  raises when nothing is known for that subject, and cannot be set
+  without a TTL to fall back on. A `429` stays a `RateLimitError`: the
+  server answered, and the `retry_after` is worth acting on.
+- `ON_ERROR_RAISE` / `ON_ERROR_LAST_KNOWN` exported, so the policy is
+  not a bare string at the call site.
+
+### Fixed
+- `__spec_version__` read `0.6.0` while `client._SPEC_VERSION` and
+  `pyproject.toml` read `0.8.0`. The middle one is what goes out as the
+  User-Agent on every request, so the version a server saw and the
+  version a reader saw had drifted apart with nothing to catch it. All
+  three now read `0.9.0`, and `tests/test_version_markers.py` holds
+  them together.
+
 ## [0.6.0] — 2026-06-02
 
 ### Added

@@ -37,6 +37,7 @@ This SDK implements the surface defined in dmzagent-sdk-spec at the
 version recorded in `__spec_version__`. See sdk-spec.md for the
 language-agnostic contract.
 """
+from .cb_cache import ON_ERROR_LAST_KNOWN, ON_ERROR_RAISE
 from .client import DMZAgent, EVENT_KINDS
 from .conversation import Conversation
 from .errors import (
@@ -74,7 +75,7 @@ from .webhook import verify_webhook_signature
 from . import concordia  # noqa: F401
 
 __version__      = "0.6.0"
-__spec_version__ = "0.6.0"
+__spec_version__ = "0.9.0"
 
 __all__ = [
     "DMZAgent",
@@ -99,4 +100,6 @@ __all__ = [
     "concordia",
     "__version__",
     "__spec_version__",
+    "ON_ERROR_RAISE",
+    "ON_ERROR_LAST_KNOWN",
 ]
