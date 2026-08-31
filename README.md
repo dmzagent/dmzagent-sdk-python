@@ -145,6 +145,42 @@ cx = DMZAgent(
 )
 ```
 
+### Circuit-breaker state cache
+
+`check()` is a network round trip, and it usually sits in front of the
+sensitive action. A per-client cache removes it for repeated checks on
+the same subject. It is off unless you set a TTL:
+
+```python
+cx = DMZAgent(
+    api_key="ck_…",
+    cb_cache_ttl=5.0,                # seconds; 0 (the default) is off
+    cb_cache_max_entries=1024,       # bounded, least-recently-used evicted
+    cb_cache_on_error="last_known",  # or "raise" (default)
+)
+
+r = cx.check(subject_id="user:ws:bot")
+r.cached          # served from memory?
+r.cache_age_ms    # how old it was
+r.stale           # served because the check itself failed
+
+cx.check(subject_id="user:ws:bot", fresh=True)   # skip the cache, refresh it
+```
+
+Read the TTL as **the longest a newly-opened breaker can go unnoticed by
+this client**. A cached `closed` is an allow the server might no longer
+give, which is why the cache is opt-in and why every result says whether
+it came from memory and how old it was.
+
+One TTL covers every state. Holding a deny longer than an allow is a
+safety policy, and it is yours to make with the number you pass.
+
+`cb_cache_on_error="last_known"` serves the last state for that subject —
+marked `.stale` — when the check cannot reach the server. With no entry
+for that subject it raises, and it needs a TTL above zero to be set at
+all. A `429` is not covered: that is the server answering, and it carries
+a `retry_after` worth acting on.
+
 ## Spec version
 
 This SDK implements the [DMZAgent SDK specification](https://github.com/praeceptor-thesis/dmzagent-sdk-spec)

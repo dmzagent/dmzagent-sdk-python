@@ -15,6 +15,7 @@ soul_version, ledger_index) are no longer populated.
 """
 from __future__ import annotations
 
+import dataclasses
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -42,6 +43,16 @@ class CheckResult:
     checked_at:      str = ""
     latency_ms:      float = 0.0       # server-side cb.check() latency
     route_latency_ms: float = 0.0      # server-side route handler latency
+    # How the caller got this result (spec §4.4). No counterpart on the
+    # wire: with the state cache off — the default — these are always
+    # False / 0.0 / False.
+    #
+    # `cache_age_ms` is milliseconds, beside `latency_ms` above, while the
+    # client's `cb_cache_ttl` is seconds beside `timeout`. Each sits in the
+    # unit its neighbours use.
+    cached:          bool = False      # served from the state cache
+    cache_age_ms:    float = 0.0       # age of the entry when it was served
+    stale:           bool = False      # served past its TTL: the check failed
     raw:             dict = field(default_factory=dict)
 
     @classmethod
@@ -58,6 +69,17 @@ class CheckResult:
             route_latency_ms = float(data.get("route_latency_ms", 0)),
             raw             = data,
         )
+
+    def as_cached(self, age_s: float, *, stale: bool = False) -> "CheckResult":
+        """This result, marked as served from the cache at `age_s` old.
+
+        `latency_ms`, `route_latency_ms`, `checked_at` and `raw` are left
+        alone: they describe the check that actually happened, and
+        rewriting them to describe the cache hit would erase the only
+        record of when the server was last asked.
+        """
+        return dataclasses.replace(
+            self, cached=True, cache_age_ms=max(0.0, age_s) * 1000.0, stale=stale)
 
 
 @dataclass(frozen=True)

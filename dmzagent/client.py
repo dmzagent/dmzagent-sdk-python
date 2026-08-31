@@ -64,6 +64,13 @@ from .errors import (
     ServerError,
     ValidationError,
 )
+from .cb_cache import (
+    DEFAULT_MAX_ENTRIES,
+    ON_ERROR_LAST_KNOWN,
+    ON_ERROR_POLICIES,
+    ON_ERROR_RAISE,
+    CBStateCache,
+)
 from .models import (
     CaptureResult,
     CheckResult,
@@ -97,7 +104,7 @@ logger = logging.getLogger("dmzagent")
 
 _DEFAULT_BASE_URL = "https://api.dmzagent.com"
 _DEFAULT_TIMEOUT_S = 10.0
-_SPEC_VERSION = "0.8.0"
+_SPEC_VERSION = "0.9.0"
 
 
 # Event kinds the agent_stream endpoint accepts. Mirrors
@@ -119,9 +126,37 @@ class DMZAgent:
         timeout: float = _DEFAULT_TIMEOUT_S,
         user_agent: str | None = None,
         transport: httpx.BaseTransport | None = None,
+        cb_cache_ttl: float = 0.0,
+        cb_cache_max_entries: int = DEFAULT_MAX_ENTRIES,
+        cb_cache_on_error: str = ON_ERROR_RAISE,
     ) -> None:
+        """`cb_cache_ttl` (SECONDS, like `timeout`) turns on the
+        circuit-breaker state cache — spec §4.4. It is off at 0.
+
+        Read it as: **the maximum time a newly-opened breaker can go
+        unobserved by this client.** A cached `closed` is an allow the
+        server might no longer give, so the number is a risk you are
+        choosing. Every cached result carries `.cached` and
+        `.cache_age_ms` so a caller can see what it read.
+
+        `cb_cache_on_error` is `"raise"` (the behaviour of a client with
+        no cache) or `"last_known"`, which serves the last state for that
+        subject — marked `.stale` — when the check itself cannot reach
+        the server.
+        """
         if not api_key or not api_key.startswith("ck_"):
             raise ValueError("api_key must start with 'ck_' — get one from your tenant_admin")
+        if cb_cache_on_error not in ON_ERROR_POLICIES:
+            raise ValueError(
+                f"cb_cache_on_error must be one of {ON_ERROR_POLICIES}; got {cb_cache_on_error!r}")
+        if cb_cache_on_error == ON_ERROR_LAST_KNOWN and cb_cache_ttl <= 0:
+            # There is nothing to fall back TO until the caller has opted
+            # into the cache. Accepting this pair would leave someone
+            # believing they had an outage story that cannot ever fire.
+            raise ValueError(
+                "cb_cache_on_error='last_known' needs cb_cache_ttl above 0")
+        self._cb_cache = CBStateCache(cb_cache_ttl, cb_cache_max_entries)
+        self._cb_cache_on_error = cb_cache_on_error
         self._api_key  = api_key
         self._base_url = base_url.rstrip("/")
         # Authorization: Bearer <ck_...> is the auth contract the server
@@ -403,22 +438,52 @@ class DMZAgent:
         *,
         subject_id: str | None = None,
         interaction_id: str | None = None,
+        fresh: bool = False,
     ) -> CheckResult:
         """Synchronous CB check. Pass exactly one of subject_id or
         interaction_id.
 
         Returns CheckResult — `.allow` is the binary the caller cares
         about. `.warning` is set when state is half-open (review).
+
+        With `cb_cache_ttl` set on the client (spec §4.4) a recent result
+        for the same subject is served from memory instead of a round
+        trip, marked `.cached` with its `.cache_age_ms`. `fresh=True`
+        skips the cache and refreshes it; with the cache off it does
+        nothing.
         """
         if (subject_id is None) == (interaction_id is None):
             raise ValueError("pass exactly one of subject_id or interaction_id")
         scope     = "subject" if subject_id else "interaction"
         scope_ref = subject_id or interaction_id
-        data = self._post_json(
-            "/v1/cb/check",
-            {"scope": scope, "scope_ref": scope_ref},
-        )
-        return CheckResult.from_response(data)
+        key       = (scope, scope_ref or "")
+
+        if not fresh:
+            hit = self._cb_cache.get(key)
+            if hit is not None:
+                result, age_s = hit
+                return result.as_cached(age_s)
+
+        try:
+            data = self._post_json(
+                "/v1/cb/check",
+                {"scope": scope, "scope_ref": scope_ref},
+            )
+        except ServerError:
+            # Network, timeout, or 5xx — the server could not answer.
+            # Deliberately NOT RateLimitError: a 429 is an answer, and it
+            # carries a retry_after the caller can act on. Hiding it
+            # behind a cached state would drop that signal.
+            if self._cb_cache_on_error == ON_ERROR_LAST_KNOWN:
+                fallback = self._cb_cache.get_any(key)
+                if fallback is not None:
+                    result, age_s = fallback
+                    return result.as_cached(age_s, stale=True)
+            raise
+
+        result = CheckResult.from_response(data)
+        self._cb_cache.put(key, result)
+        return result
 
     @contextlib.contextmanager
     def guard(
@@ -427,6 +492,7 @@ class DMZAgent:
         subject_id: str | None = None,
         interaction_id: str | None = None,
         raise_on_open: bool = False,
+        fresh: bool = False,
     ) -> Iterator[CheckResult]:
         """Context-manager form of `check()`.
 
@@ -443,7 +509,8 @@ class DMZAgent:
             except CBOpenError as e:
                 log_blocked(e.reason, e.fired_policies)
         """
-        result = self.check(subject_id=subject_id, interaction_id=interaction_id)
+        result = self.check(
+            subject_id=subject_id, interaction_id=interaction_id, fresh=fresh)
         if raise_on_open and not result.allow:
             raise CBOpenError(
                 f"circuit breaker open: {result.reason}",
