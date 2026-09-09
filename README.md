@@ -181,6 +181,100 @@ for that subject it raises, and it needs a TTL above zero to be set at
 all. A `429` is not covered: that is the server answering, and it carries
 a `retry_after` worth acting on.
 
+## Human-in-the-loop approvals
+
+A circuit-breaker policy can fire with action `require_approval`, which
+**holds** the action instead of refusing it. `check()` then hands back a
+denial that names what it is waiting on:
+
+```python
+g = cx.check(subject_id="user:ws:checkout-bot")
+if g.awaiting_approval:
+    show_my_own_approval_screen(g.pending_approval_id)   # asked
+elif not g.allow:
+    return refuse(g.reason)                              # refused
+```
+
+That is the whole difference between a breaker and a human-in-the-loop
+control, and it is one field because you have to branch on it.
+
+### You render it. All of it.
+
+```python
+for a in cx.iter_approvals(status="pending"):
+    print(a.action["tool"], a.action["args"])   # the held call, verbatim
+    print(a.reason)                             # your operator's policy words
+    print(a.expires_at)                         # decide before this
+```
+
+Nothing in an `Approval` is display text we wrote. `reason` and each
+`fired_policies[].name` are the words your operator typed when they
+wrote the policy, and `action` is the call your agent was about to make.
+There is no message for your end user, no copy of ours, and no branding —
+because a sentence we wrote would read identically in every customer's
+product, which is the thing this is designed to avoid.
+
+### A decision records which human made it
+
+```python
+cx.approve_approval(
+    "apr_7f3c9a1b",
+    actor_id="acct_4471",              # your identifier, not ours
+    actor_label="Dana R.",
+    reason="verified the order by phone",
+)
+```
+
+`actor_id` is required, never defaulted, and never derived from the API
+key — the key identifies your integration, and an approval whose actor is
+the integration that requested it has recorded nobody. We resolve it
+against no directory, so your users never need an account here. An empty
+one raises `ValueError` before any request goes out.
+
+Two operators who click at the same moment produce one decision and one
+`ConflictError`; `err.body["status"]` says what the approval had already
+become. That is not a retry — the call did not fail, it lost.
+
+**An approval that nobody answers declines.** `on_expiry` is always
+`decline` and there is no setting that changes it: an approval that
+becomes an allow because nobody looked at it is not a
+human-in-the-loop control, it is a delay with extra steps.
+
+## The incident and remediation ledger
+
+`anchor` has been on `CheckResult` since 0.4.0, pointing into a ledger
+nothing could open. Now it opens:
+
+```python
+g = cx.check(subject_id="user:ws:checkout-bot")
+recorded = g.anchor           # {"ledger_index": 40197, "hash": "b1c4…"}
+
+for inc in cx.iter_incidents(status="open", since="2026-09-01T00:00:00Z"):
+    print(inc.kind, inc.reason, len(inc.remediations))
+    if inc.anchor == recorded:
+        ...                   # this is the entry your check was told about
+```
+
+Every breaker that opened, every approval decided, every remediation
+that ran — newest ledger entry first, in the order the ledger recorded
+them rather than by timestamp, because two entries written in the same
+second still have an order.
+
+The ledger is **append-only**. There is no `close_incident()` and no
+method that edits an entry: an incident reaches `remediated` because a
+remediation was appended to it, and `status` is a fold over what has
+been appended. An incident with no remediations is the normal shape of
+something nobody has answered yet.
+
+### Paging
+
+`list_approvals()` and `get_incidents()` return one page and do not
+follow `next_cursor`. You asked for 25 and you get 25 — a method that
+quietly walked every page would turn one bounded request into an
+unbounded one against a record that only grows. `iter_approvals()` and
+`iter_incidents()` do the walk, lazily: break out of the loop and the
+next page is never requested.
+
 ## Spec version
 
 This SDK implements the [DMZAgent SDK specification](https://github.com/praeceptor-thesis/dmzagent-sdk-spec)

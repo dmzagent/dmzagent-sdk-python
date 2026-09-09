@@ -51,12 +51,18 @@ from .errors import (
     ValidationError,
 )
 from .models import (
+    Approval,
+    ApprovalDecision,
+    ApprovalPage,
     CaptureResult,
     CheckResult,
     DivisionConfig,
     EmitResult,
+    Incident,
+    IncidentPage,
     NotificationPrefs,
     OutcomeResult,
+    Remediation,
     ReviewEvent,
 )
 from .subjects import (
@@ -74,18 +80,24 @@ from .webhook import verify_webhook_signature
 # stays cheap — the submodule imports lazily on attribute access.
 from . import concordia  # noqa: F401
 
-__version__      = "0.6.0"
-__spec_version__ = "0.9.0"
+__version__      = "0.7.0"
+__spec_version__ = "0.10.0"
 
 __all__ = [
     "DMZAgent",
     "Conversation",
+    "Approval",
+    "ApprovalDecision",
+    "ApprovalPage",
     "CaptureResult",
     "CheckResult",
     "DivisionConfig",
     "EmitResult",
+    "Incident",
+    "IncidentPage",
     "NotificationPrefs",
     "OutcomeResult",
+    "Remediation",
     "ReviewEvent",
     "EVENT_KINDS",
     "DMZAgentError",
