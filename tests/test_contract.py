@@ -183,6 +183,14 @@ def _call_method(client: DMZAgent, method: str, args: dict):
         return client.check(**args)
     if method == "emit_event":
         return client.emit_event(args.pop("kind"), **args)
+    # 0.10.0 — the white-label approval control and the readable ledger.
+    if method == "list_approvals":
+        return client.list_approvals(**args)
+    if method == "decide_approval":
+        return client.decide_approval(
+            args.pop("approval_id"), args.pop("decision"), **args)
+    if method == "get_incidents":
+        return client.get_incidents(**args)
     raise AssertionError(f"unknown method: {method}")
 
 
@@ -194,6 +202,25 @@ def test_golden_envelope(fx, client, captured):
     assert req["path"] == fx["expected_path"], (
         f"{fx['name']}: expected {fx['expected_path']!r}, got {req['path']!r}"
     )
+    # A read vector pins its verb and its query string. Asserting only the
+    # body would let a GET that sent every filter as nothing at all pass,
+    # since a GET has no body to be wrong about.
+    if "expected_method" in fx:
+        assert req["method"] == fx["expected_method"], (
+            f"{fx['name']}: expected {fx['expected_method']}, got {req['method']}"
+        )
+    if "expected_query" in fx:
+        from urllib.parse import parse_qsl, urlsplit
+        got = dict(parse_qsl(urlsplit(req["url"]).query))
+        assert got == fx["expected_query"], (
+            f"{fx['name']}: query mismatch\nexpected: {fx['expected_query']}\n"
+            f"got:      {got}"
+        )
+    if fx["expected_body"] is None:
+        assert not req["body"], (
+            f"{fx['name']}: expected no request body, got {req['body']!r}"
+        )
+        return
     assert _normalize(req["body"]) == _normalize(fx["expected_body"]), (
         f"{fx['name']}: body mismatch\n"
         f"expected: {json.dumps(_normalize(fx['expected_body']), sort_keys=True)}\n"

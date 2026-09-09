@@ -2,6 +2,63 @@
 
 ## [Unreleased]
 
+## [0.7.0] — 2026-09-09 (spec 0.10.0)
+
+### Added
+- **Human-in-the-loop approvals you render yourself.**
+  `list_approvals()`, `iter_approvals()`, `decide_approval()`, and the
+  `approve_approval()` / `decline_approval()` wrappers.
+
+  An `Approval` holds nothing we wrote for your users: `reason` and each
+  `fired_policies[].name` are your operator's own policy words, and
+  `action` is the call your agent was about to make, verbatim. Building
+  the sentence your user reads is your job, because a sentence we wrote
+  would read the same in every customer's product.
+
+  `actor_id` is required on every decision and is never defaulted or
+  derived from the API key. A decision without one raises `ValueError`
+  before any request is made — a caller who has not got a human's
+  identity at that point does not have a human, and the failure belongs
+  where the mistake is.
+
+- **`CheckResult.pending_approval_id` and `.awaiting_approval`.** The
+  difference between being refused and being asked. `allow` is still
+  `False` in both cases, deliberately: code that reads `allow` alone
+  keeps refusing, so nothing that predates this release starts allowing
+  what it used to deny.
+
+- **The incident and remediation ledger is readable** — `get_incidents()`
+  and `iter_incidents()`, returning `Incident` with its `remediations`.
+
+  `anchor` has been on `CheckResult` since 0.4.0 and pointed into a
+  ledger nothing could open. Record it at check time, find that
+  `ledger_index` here, compare hashes.
+
+  An incident with no remediations and status `open` is the normal shape
+  of something nobody has answered yet — not an error, and not collapsed
+  to `None`.
+
+### Changed
+- **`ConflictError` also means a settled approval.** A second decision on
+  an approval someone already decided, or one past its deadline, is a
+  409. Same type as the idempotency conflict for the same reason: the
+  call did not fail, it lost, and retrying cannot win. `err.body["status"]`
+  says which of the two it was, and the message no longer asserts
+  "Idempotency-Key" on paths where that is not the cause.
+
+### Notes
+- **Neither list method follows a cursor on its own.** You asked for one
+  page and you get one page; the `iter_*` generators do the walk and
+  fetch a page only when you ask for an item past the ones they hold.
+  Break out of the loop and the next page is never requested.
+- **There is no `close_incident()`.** The ledger is append-only and has
+  no endpoint for one — an incident reaches `remediated` because a
+  remediation was appended to it.
+- **Expiry declines, and cannot be configured otherwise.** `on_expiry`
+  reads `decline` even if a server sends something else.
+- Local argument validation raises `ValueError`, as everywhere else in
+  this SDK; `ValidationError` stays the server's 400/422.
+
 ### Added
 - **Circuit-breaker state cache** (spec §4.4). `check()` is a network
   round trip in front of a sensitive action; `cb_cache_ttl` (seconds,

@@ -42,7 +42,7 @@ workspace_id on the wire.
 Default base_url: `https://api.dmzagent.com`. Customers running
 against staging override with `DMZAgent(api_key=…, base_url="https://staging.api.eastern-shore-solutions.com")`.
 
-This module implements spec version 0.8.1 — see sdk-spec.md in
+This module implements spec version 0.10.0 — see sdk-spec.md in
 dmzagent-sdk-spec for the canonical surface.
 """
 from __future__ import annotations
@@ -72,10 +72,14 @@ from .cb_cache import (
     CBStateCache,
 )
 from .models import (
+    Approval,
+    ApprovalPage,
     CaptureResult,
     CheckResult,
     DivisionConfig,
     EmitResult,
+    Incident,
+    IncidentPage,
     NotificationPrefs,
     OutcomeResult,
 )
@@ -104,7 +108,7 @@ logger = logging.getLogger("dmzagent")
 
 _DEFAULT_BASE_URL = "https://api.dmzagent.com"
 _DEFAULT_TIMEOUT_S = 10.0
-_SPEC_VERSION = "0.9.0"
+_SPEC_VERSION = "0.10.0"
 
 
 # Event kinds the agent_stream endpoint accepts. Mirrors
@@ -617,6 +621,203 @@ class DMZAgent:
         return DivisionConfig.from_response(data)
 
     # ===================================================================== #
+    # Human-in-the-loop approvals (spec §2.8–§2.9, §5.16–§5.18)
+    # ===================================================================== #
+
+    _DECISIONS = ("approve", "decline")
+
+    def list_approvals(
+        self,
+        *,
+        status: str = "pending",
+        subject_id: str | None = None,
+        limit: int | None = None,
+        cursor: str | None = None,
+    ) -> ApprovalPage:
+        """One page of approvals awaiting a human decision.
+
+        This is the read half of the white-label control: you render
+        these in your own product, with your own words. Nothing in an
+        `Approval` is display text we wrote — see `Approval`.
+
+            page = cx.list_approvals(subject_id="user:ws:checkout-bot")
+            for a in page:
+                render_my_own_approval_card(a.action, a.reason)
+
+        Does not follow `next_cursor`. A caller who asked for 25 got 25,
+        and a method that quietly walked every page would turn one
+        bounded request into an unbounded one against a record that only
+        grows. Use `iter_approvals()` when you want the walk.
+        """
+        params = {"status": status}
+        if subject_id is not None:
+            params["subject_id"] = subject_id
+        if limit is not None:
+            self._require_page_limit(limit)
+            params["limit"] = str(limit)
+        if cursor is not None:
+            params["cursor"] = cursor
+        return ApprovalPage.from_response(self._get_json("/v1/approvals", params))
+
+    def iter_approvals(
+        self,
+        *,
+        status: str = "pending",
+        subject_id: str | None = None,
+        limit: int | None = None,
+    ) -> Iterator[Approval]:
+        """Lazily walk every page of `list_approvals()`.
+
+        Fetches a page only when you ask for an item past the ones it
+        holds. Break out of the loop and the next page is never
+        requested — which is the whole reason this is a generator and
+        not a list.
+        """
+        cursor: str | None = None
+        while True:
+            page = self.list_approvals(
+                status=status, subject_id=subject_id, limit=limit, cursor=cursor)
+            yield from page.approvals
+            cursor = page.next_cursor
+            if not cursor:
+                return
+
+    def decide_approval(
+        self,
+        approval_id: str,
+        decision: str,
+        *,
+        actor_id: str,
+        reason: str | None = None,
+        actor_label: str | None = None,
+    ) -> Approval:
+        """Approve or decline a held action, on behalf of a named human.
+
+        `actor_id` is required and is *your* identifier for the person
+        who decided. It is never defaulted and never derived from the API
+        key: the key identifies your integration, and an approval whose
+        actor is the integration that requested it has recorded nobody.
+        We resolve it against no directory, so your users never need an
+        account here.
+
+            cx.decide_approval(
+                "apr_7f3c9a1b", "approve",
+                actor_id="acct_4471", actor_label="Dana R.",
+                reason="verified the order by phone",
+            )
+
+        Raises `ValueError` locally — with no round trip — when
+        `actor_id` is empty or `decision` is not approve/decline, because
+        a caller who has not got a human's identity at this point does
+        not have a human, and the failure belongs where the mistake is.
+
+        Raises `ConflictError` when the approval was already decided or
+        has expired. That is not a transient fault to retry: someone else
+        decided, or the window closed. `error.body["status"]` says which.
+        """
+        if decision not in self._DECISIONS:
+            raise ValueError(
+                f"decision must be one of {self._DECISIONS}, got {decision!r}")
+        if not isinstance(actor_id, str) or not actor_id.strip():
+            raise ValueError(
+                "actor_id is required: a human-in-the-loop decision has to "
+                "record which human made it")
+
+        body: dict[str, Any] = {"decision": decision, "actor_id": actor_id}
+        if actor_label is not None:
+            body["actor_label"] = actor_label
+        if reason is not None:
+            body["reason"] = reason
+        data = self._post_json(f"/v1/approvals/{approval_id}/decision", body)
+        return Approval.from_response(data)
+
+    def approve_approval(self, approval_id: str, *, actor_id: str,
+                         reason: str | None = None,
+                         actor_label: str | None = None) -> Approval:
+        """`decide_approval(..., "approve")`. `actor_id` stays required."""
+        return self.decide_approval(approval_id, "approve", actor_id=actor_id,
+                                    reason=reason, actor_label=actor_label)
+
+    def decline_approval(self, approval_id: str, *, actor_id: str,
+                         reason: str | None = None,
+                         actor_label: str | None = None) -> Approval:
+        """`decide_approval(..., "decline")`. `actor_id` stays required."""
+        return self.decide_approval(approval_id, "decline", actor_id=actor_id,
+                                    reason=reason, actor_label=actor_label)
+
+    # ===================================================================== #
+    # The incident and remediation ledger (spec §2.10, §5.19–§5.21)
+    # ===================================================================== #
+
+    def get_incidents(
+        self,
+        *,
+        status: str = "all",
+        subject_id: str | None = None,
+        since: str | None = None,
+        until: str | None = None,
+        limit: int | None = None,
+        cursor: str | None = None,
+    ) -> IncidentPage:
+        """One page of the incident and remediation ledger.
+
+        Every breaker that opened, every approval decided, every
+        remediation that ran — newest ledger entry first. This is the
+        readable form of the `anchor` that `check()` hands back: record
+        `result.anchor` at check time, find that `ledger_index` here, and
+        compare hashes. A mismatch is the alarm the ledger exists for.
+
+            for inc in cx.get_incidents(status="open"):
+                print(inc.incident_id, inc.reason, len(inc.remediations))
+
+        `since` and `until` are ISO-8601 strings; the window is
+        half-open, `since` inclusive and `until` exclusive.
+
+        Does not follow `next_cursor` — see `iter_incidents()`.
+        """
+        params = {"status": status}
+        for name, value in (("subject_id", subject_id), ("since", since),
+                            ("until", until), ("cursor", cursor)):
+            if value is not None:
+                params[name] = value
+        if limit is not None:
+            self._require_page_limit(limit)
+            params["limit"] = str(limit)
+        return IncidentPage.from_response(self._get_json("/v1/incidents", params))
+
+    def iter_incidents(
+        self,
+        *,
+        status: str = "all",
+        subject_id: str | None = None,
+        since: str | None = None,
+        until: str | None = None,
+        limit: int | None = None,
+    ) -> Iterator[Incident]:
+        """Lazily walk every page of `get_incidents()`, on §5.17's terms."""
+        cursor: str | None = None
+        while True:
+            page = self.get_incidents(
+                status=status, subject_id=subject_id, since=since,
+                until=until, limit=limit, cursor=cursor)
+            yield from page.incidents
+            cursor = page.next_cursor
+            if not cursor:
+                return
+
+    # There is deliberately no close_incident() / resolve_incident(). The
+    # ledger is append-only and has no endpoint for one: an incident
+    # reaches "remediated" because a remediation was appended to it, and a
+    # convenience method that read as closing one would describe a ledger
+    # this is not (spec §5.21).
+
+    @staticmethod
+    def _require_page_limit(limit: int) -> None:
+        """Reject a page size the server would reject, before the round trip."""
+        if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 100:
+            raise ValueError(f"limit must be an integer in 1..100, got {limit!r}")
+
+    # ===================================================================== #
     # Resource management
     # ===================================================================== #
 
@@ -634,10 +835,10 @@ class DMZAgent:
     # Internal — HTTP plumbing
     # ===================================================================== #
 
-    def _get_json(self, path: str) -> dict:
+    def _get_json(self, path: str, params: dict | None = None) -> dict:
         url = f"{self._base_url}{path}"
         try:
-            resp = self._client.get(url)
+            resp = self._client.get(url, params=params or None)
         except httpx.TimeoutException as e:
             raise ServerError(f"timeout calling {path}", body=str(e)) from e
         except httpx.RequestError as e:
@@ -700,12 +901,16 @@ class DMZAgent:
                 f"server rejected request to {path}: {body!r}",
                 status_code=resp.status_code, body=body,
             )
-        # 409 is the Idempotency-Key in-flight conflict (spec §1.8). Kept
-        # separate from ServerError: the duplicate is the caller's own
-        # earlier request, so retrying the same key replays its response
-        # instead of causing a second side effect.
+        # 409 has two causes and one type (spec §3). Either the caller's own
+        # earlier request is still in flight under this Idempotency-Key
+        # (§1.8), or an approval was already decided or has expired (§2.9).
+        # Neither is transient — the call did not fail, it lost — so this
+        # stays separate from ServerError, and the message names which one
+        # it was rather than asserting the older cause on every path.
         if resp.status_code == 409:
+            settled = body.get("status") if isinstance(body, dict) else None
             raise ConflictError(
+                f"approval already {settled} on {path}" if settled else
                 f"a request with this Idempotency-Key is already in flight on {path}",
                 status_code=resp.status_code, body=body,
             )

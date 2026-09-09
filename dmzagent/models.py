@@ -53,7 +53,21 @@ class CheckResult:
     cached:          bool = False      # served from the state cache
     cache_age_ms:    float = 0.0       # age of the entry when it was served
     stale:           bool = False      # served past its TTL: the check failed
+    # The approval this denial is waiting on, or None (spec §2.2). Non-None
+    # only alongside allow=False. It is a field rather than a fourth state
+    # so that code reading `allow` alone still refuses: a client that has
+    # never heard of approvals must not start allowing what it used to deny.
+    pending_approval_id: str | None = None
     raw:             dict = field(default_factory=dict)
+
+    @property
+    def awaiting_approval(self) -> bool:
+        """This is an ask, not a refusal — a human can still clear it.
+
+        The difference `pending_approval_id` exists to express: branch on
+        it to show your approval UI instead of telling the user no.
+        """
+        return self.pending_approval_id is not None
 
     @classmethod
     def from_response(cls, data: dict) -> "CheckResult":
@@ -67,6 +81,7 @@ class CheckResult:
             checked_at      = data.get("checked_at", ""),
             latency_ms      = float(data.get("latency_ms", 0)),
             route_latency_ms = float(data.get("route_latency_ms", 0)),
+            pending_approval_id = data.get("pending_approval_id"),
             raw             = data,
         )
 
@@ -270,4 +285,234 @@ class ReviewEvent:
             frame_id     = data.get("frame_id"),
             occurred_at  = data.get("occurred_at", ""),
             raw          = data,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Human-in-the-loop approvals and the incident ledger (spec §2.8–§2.10, 0.10.0)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ApprovalDecision:
+    """The human half of an `Approval` — who decided, and why.
+
+    `actor_id` is the *caller's* identifier for a person, not ours. We
+    resolve it against no directory and store it as given, which is what
+    lets a customer's own users decide without ever holding an account
+    here.
+    """
+
+    decision:    str               # "approve" | "decline"
+    actor_id:    str
+    actor_label: str | None = None
+    reason:      str | None = None
+    decided_at:  str = ""
+
+    @classmethod
+    def from_response(cls, data: dict) -> "ApprovalDecision":
+        return cls(
+            decision    = data.get("decision", ""),
+            actor_id    = data.get("actor_id", ""),
+            actor_label = data.get("actor_label"),
+            reason      = data.get("reason"),
+            decided_at  = data.get("decided_at", ""),
+        )
+
+
+@dataclass(frozen=True)
+class Approval:
+    """An action held pending a human decision (spec §7.12).
+
+    Every field here is something *you* render. There is no message
+    written for your end user, no copy of ours, and no display string:
+    `reason` and each `fired_policies[].name` are the words your operator
+    typed when they wrote the policy, and `action` is the call your agent
+    was about to make, verbatim. Building display text out of them is
+    your job precisely because a sentence we wrote would read the same in
+    every customer's product.
+
+    `expires_at` is left as the server's ISO-8601 string rather than a
+    parsed countdown. Seconds-remaining computed at parse time is wrong
+    by however long you held the object, and the caller rendering an
+    approval deadline is exactly the caller who holds it.
+    """
+
+    approval_id:    str
+    status:         str            # "pending" | "approved" | "declined" | "expired"
+    subject_id:     str = ""
+    interaction_id: str | None = None
+    frame_id:       str | None = None
+    action:         dict = field(default_factory=dict)   # {"tool": ..., "args": {...}}
+    reason:         str = ""
+    fired_policies: list[dict] = field(default_factory=list)
+    requested_at:   str = ""
+    expires_at:     str = ""
+    on_expiry:      str = "decline"
+    anchor:         dict | None = None
+    decision:       ApprovalDecision | None = None
+    raw:            dict = field(default_factory=dict)
+
+    @property
+    def is_pending(self) -> bool:
+        return self.status == "pending"
+
+    @classmethod
+    def from_response(cls, data: dict) -> "Approval":
+        raw_decision = data.get("decision")
+        return cls(
+            approval_id    = data.get("approval_id", ""),
+            status         = data.get("status", ""),
+            subject_id     = data.get("subject_id", ""),
+            interaction_id = data.get("interaction_id"),
+            frame_id       = data.get("frame_id"),
+            action         = data.get("action") or {},
+            reason         = data.get("reason", ""),
+            fired_policies = data.get("fired_policies") or [],
+            requested_at   = data.get("requested_at", ""),
+            expires_at     = data.get("expires_at", ""),
+            # Not defaulted from the server's value: expiry declines, and
+            # a server that ever sent "approve" would be describing a
+            # control this SDK does not implement (spec §2.9).
+            on_expiry      = "decline",
+            anchor         = data.get("anchor"),
+            decision       = ApprovalDecision.from_response(raw_decision)
+                             if isinstance(raw_decision, dict) else None,
+            raw            = data,
+        )
+
+
+@dataclass(frozen=True)
+class ApprovalPage:
+    """One page of `list_approvals()` (spec §7.11).
+
+    `next_cursor` is None on the last page. Nothing here follows it for
+    you — see `iter_approvals()`.
+    """
+
+    approvals:   list[Approval] = field(default_factory=list)
+    next_cursor: str | None = None
+    raw:         dict = field(default_factory=dict)
+
+    def __iter__(self):
+        return iter(self.approvals)
+
+    def __len__(self) -> int:
+        return len(self.approvals)
+
+    @classmethod
+    def from_response(cls, data: dict) -> "ApprovalPage":
+        return cls(
+            approvals   = [Approval.from_response(a)
+                           for a in (data.get("approvals") or [])],
+            next_cursor = data.get("next_cursor"),
+            raw         = data,
+        )
+
+
+@dataclass(frozen=True)
+class Remediation:
+    """One thing that was done about an incident (spec §7.14)."""
+
+    remediation_id: str
+    kind:           str            # "approval" | "policy_change" | "manual" | "auto"
+    outcome:        str = ""
+    approval_id:    str | None = None
+    actor_id:       str | None = None
+    reason:         str | None = None
+    occurred_at:    str = ""
+    anchor:         dict | None = None
+
+    @classmethod
+    def from_response(cls, data: dict) -> "Remediation":
+        return cls(
+            remediation_id = data.get("remediation_id", ""),
+            kind           = data.get("kind", ""),
+            outcome        = data.get("outcome", ""),
+            approval_id    = data.get("approval_id"),
+            actor_id       = data.get("actor_id"),
+            reason         = data.get("reason"),
+            occurred_at    = data.get("occurred_at", ""),
+            anchor         = data.get("anchor"),
+        )
+
+
+@dataclass(frozen=True)
+class Incident:
+    """One entry of the append-only incident ledger (spec §7.14).
+
+    `anchor` is the ledger entry that opened this incident, in the same
+    `{ledger_index, hash}` shape `CheckResult.anchor` carries. A caller
+    who recorded an anchor at check time can find that entry here and
+    compare hashes; a mismatch is the one alarm the ledger exists to make
+    possible.
+
+    An incident with no remediations and status "open" is the normal
+    shape of something nobody has answered yet — not an error, and not
+    something to collapse to None.
+    """
+
+    incident_id:    str
+    status:         str            # "open" | "remediated" | "accepted"
+    kind:           str            # "cb_open" | "cb_half_open" | "policy_fired" | "approval_required"
+    subject_id:     str = ""
+    frame_id:       str | None = None
+    opened_at:      str = ""
+    closed_at:      str | None = None
+    reason:         str = ""
+    fired_policies: list[dict] = field(default_factory=list)
+    remediations:   list[Remediation] = field(default_factory=list)
+    anchor:         dict | None = None
+    raw:            dict = field(default_factory=dict)
+
+    @property
+    def is_open(self) -> bool:
+        return self.status == "open"
+
+    @classmethod
+    def from_response(cls, data: dict) -> "Incident":
+        return cls(
+            incident_id    = data.get("incident_id", ""),
+            status         = data.get("status", ""),
+            kind           = data.get("kind", ""),
+            subject_id     = data.get("subject_id", ""),
+            frame_id       = data.get("frame_id"),
+            opened_at      = data.get("opened_at", ""),
+            closed_at      = data.get("closed_at"),
+            reason         = data.get("reason", ""),
+            fired_policies = data.get("fired_policies") or [],
+            remediations   = [Remediation.from_response(r)
+                              for r in (data.get("remediations") or [])],
+            anchor         = data.get("anchor"),
+            raw            = data,
+        )
+
+
+@dataclass(frozen=True)
+class IncidentPage:
+    """One page of `get_incidents()` (spec §7.13).
+
+    Newest `ledger_index` first, as the server ordered it. The SDK does
+    not re-sort: ordering by a timestamp cannot separate two entries
+    written in the same second, and the ledger's own order is the one
+    that means something.
+    """
+
+    incidents:   list[Incident] = field(default_factory=list)
+    next_cursor: str | None = None
+    raw:         dict = field(default_factory=dict)
+
+    def __iter__(self):
+        return iter(self.incidents)
+
+    def __len__(self) -> int:
+        return len(self.incidents)
+
+    @classmethod
+    def from_response(cls, data: dict) -> "IncidentPage":
+        return cls(
+            incidents   = [Incident.from_response(i)
+                           for i in (data.get("incidents") or [])],
+            next_cursor = data.get("next_cursor"),
+            raw         = data,
         )
