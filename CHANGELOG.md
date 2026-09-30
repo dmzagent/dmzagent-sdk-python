@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+## [0.10.0] — 2026-09-30 (spec 0.10.0)
+
+### Changed
+- **Package version now tracks the spec version.** No API change from
+  0.7.0; the package is renumbered so all four SDKs and the spec release
+  together under one number. This is the first version published to the
+  registry.
+
 ## [0.7.0] — 2026-09-09 (spec 0.10.0)
 
 ### Added

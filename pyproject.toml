@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "dmzagent"
-version = "0.7.0"
+version = "0.10.0"
 description = "The codex of trust between minds — Python SDK for emitting agent events to Anima and governing them through Concordia's MCP."
 readme = "README.md"
 requires-python = ">=3.10"
