@@ -80,7 +80,7 @@ from .webhook import verify_webhook_signature
 # stays cheap — the submodule imports lazily on attribute access.
 from . import concordia  # noqa: F401
 
-__version__      = "0.7.0"
+__version__      = "0.10.0"
 __spec_version__ = "0.10.0"
 
 __all__ = [
