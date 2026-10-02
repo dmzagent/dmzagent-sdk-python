@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+### Changed
+- **No third-party dependencies.** The HTTP layer is now the standard
+  library (`urllib.request`), so `pip install dmzagent` installs this
+  package and nothing else. A process that imports the SDK, such as an
+  agent runner holding model, memory and repository credentials, gains no
+  code its owners did not write.
+
+  `transport=` still accepts an httpx transport, `httpx.MockTransport`
+  included. It is adapted, and httpx is imported only when one is passed,
+  so existing callers and their tests keep working unchanged. What goes
+  over the wire is unchanged too: JSON bodies are encoded exactly as httpx
+  0.28 encoded them.
+
+  `tests/test_stdlib_transport.py` drives the default transport over a
+  real socket: body bytes, headers, query encoding, error statuses,
+  `Retry-After`, read and connect timeouts, a refused connection, and
+  Concordia's JSON-RPC path.
+
 ## [0.10.0] — 2026-09-30 (spec 0.10.0)
 
 ### Changed

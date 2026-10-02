@@ -52,7 +52,7 @@ import logging
 import time
 from typing import Any, Iterator
 
-import httpx
+from ._http import HTTPClient, Response, TransportError, TransportTimeout
 
 from .errors import (
     AuthError,
@@ -120,7 +120,7 @@ VALID_SUBJECT_TYPES = ("chat", "lead", "journey", "sensor", "ticket")
 
 
 class DMZAgent:
-    """Synchronous DMZAgent client. Thread-safe (httpx.Client is)."""
+    """Synchronous DMZAgent client. Thread-safe: each call is one independent request."""
 
     def __init__(
         self,
@@ -129,7 +129,7 @@ class DMZAgent:
         base_url: str = _DEFAULT_BASE_URL,
         timeout: float = _DEFAULT_TIMEOUT_S,
         user_agent: str | None = None,
-        transport: httpx.BaseTransport | None = None,
+        transport: Any = None,
         cb_cache_ttl: float = 0.0,
         cb_cache_max_entries: int = DEFAULT_MAX_ENTRIES,
         cb_cache_on_error: str = ON_ERROR_RAISE,
@@ -165,7 +165,10 @@ class DMZAgent:
         self._base_url = base_url.rstrip("/")
         # Authorization: Bearer <ck_...> is the auth contract the server
         # honors via auth._extract_bearer / auth.current_user.
-        self._client = httpx.Client(
+        # `transport` is a dmzagent transport, or an httpx one from a caller
+        # who already uses httpx (adapted in `_http`); None is the standard
+        # library.
+        self._client = HTTPClient(
             timeout=timeout,
             headers={
                 "Authorization":   f"Bearer {api_key}",
@@ -822,7 +825,7 @@ class DMZAgent:
     # ===================================================================== #
 
     def close(self) -> None:
-        """Close the underlying httpx.Client. Safe to call multiple times."""
+        """Close the underlying transport. Safe to call multiple times."""
         self._client.close()
 
     def __enter__(self) -> "DMZAgent":
@@ -839,9 +842,9 @@ class DMZAgent:
         url = f"{self._base_url}{path}"
         try:
             resp = self._client.get(url, params=params or None)
-        except httpx.TimeoutException as e:
+        except TransportTimeout as e:
             raise ServerError(f"timeout calling {path}", body=str(e)) from e
-        except httpx.RequestError as e:
+        except TransportError as e:
             raise ServerError(f"network error calling {path}: {e}") from e
         return self._handle(resp, path)
 
@@ -849,9 +852,9 @@ class DMZAgent:
         url = f"{self._base_url}{path}"
         try:
             resp = self._client.put(url, json=body)
-        except httpx.TimeoutException as e:
+        except TransportTimeout as e:
             raise ServerError(f"timeout calling {path}", body=str(e)) from e
-        except httpx.RequestError as e:
+        except TransportError as e:
             raise ServerError(f"network error calling {path}: {e}") from e
         return self._handle(resp, path)
 
@@ -865,13 +868,13 @@ class DMZAgent:
         url = f"{self._base_url}{path}"
         try:
             resp = self._client.post(url, json=body, headers=extra_headers)
-        except httpx.TimeoutException as e:
+        except TransportTimeout as e:
             raise ServerError(f"timeout calling {path}", body=str(e)) from e
-        except httpx.RequestError as e:
+        except TransportError as e:
             raise ServerError(f"network error calling {path}: {e}") from e
         return self._handle(resp, path)
 
-    def _handle(self, resp: httpx.Response, path: str) -> dict:
+    def _handle(self, resp: Response, path: str) -> dict:
         if 200 <= resp.status_code < 300:
             try:
                 return resp.json()
