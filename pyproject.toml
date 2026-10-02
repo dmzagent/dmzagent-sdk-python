@@ -23,9 +23,10 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
-dependencies = [
-    "httpx>=0.27",
-]
+# None. The HTTP layer is the standard library (`dmzagent/_http.py`), so
+# importing the SDK adds no code its owners did not write. httpx is only for
+# tests, and for callers who pass their own httpx transport.
+dependencies = []
 
 [project.urls]
 Homepage      = "https://dmzagent.com"
@@ -36,6 +37,7 @@ Spec          = "https://github.com/praeceptor-thesis/dmzagent-sdk-spec"
 
 [project.optional-dependencies]
 dev = [
+    "httpx>=0.27",
     "pytest>=7",
     "pytest-asyncio>=0.21",
     "mypy>=1.5",

@@ -48,7 +48,7 @@ import urllib.parse
 from dataclasses import dataclass, field
 from typing import Any, Iterable
 
-import httpx
+from ._http import HTTPClient, TransportError, TransportTimeout
 
 # --------------------------------------------------------------------------- #
 # Result dataclasses — typed wrappers around the four tool responses.
@@ -301,15 +301,15 @@ _PROTOCOL        = "1.0"
 class ConcordiaClient:
     """Concordia MCP 1.0 client.
 
-    Thread-safe (the underlying httpx.Client is). Implements
+    Thread-safe: each call is one independent request. Implements
     `__enter__`/`__exit__` so it can be used as a context manager;
     call `.close()` explicitly otherwise to release the HTTP pool.
 
     Parameters mirror the agent-stream `DMZAgent` client for
     consistency: `api_key` (required, must start with `ck_`),
     `base_url`, `timeout`, `user_agent`. A `transport` kwarg is
-    accepted for testing (pass a fake httpx transport to bypass the
-    network).
+    accepted for testing: a dmzagent transport, or an httpx one such
+    as `httpx.MockTransport`, bypasses the network.
     """
 
     def __init__(
@@ -319,7 +319,7 @@ class ConcordiaClient:
         base_url: str = DEFAULT_BASE_URL,
         timeout: float = DEFAULT_TIMEOUT,
         user_agent: str | None = None,
-        transport: httpx.BaseTransport | None = None,
+        transport: Any = None,
     ) -> None:
         key = api_key or os.environ.get("DMZAGENT_API_KEY", "")
         if not key:
@@ -338,18 +338,16 @@ class ConcordiaClient:
         self._ua       = user_agent or _USER_AGENT
         self._id_seq   = 0
 
-        client_kwargs: dict[str, Any] = {
-            "base_url": self._base_url,
-            "timeout":  self._timeout,
-            "headers":  {
+        self._http = HTTPClient(
+            base_url=self._base_url,
+            timeout=self._timeout,
+            headers={
                 "User-Agent":    self._ua,
                 "Authorization": f"Bearer {self._api_key}",
                 "Content-Type":  "application/json",
             },
-        }
-        if transport is not None:
-            client_kwargs["transport"] = transport
-        self._http = httpx.Client(**client_kwargs)
+            transport=transport,
+        )
 
     # --- lifecycle ---------------------------------------------------------
 
@@ -386,11 +384,11 @@ class ConcordiaClient:
         }
         try:
             resp = self._http.post(_MCP_PATH, json=body)
-        except httpx.TimeoutException as e:
+        except TransportTimeout as e:
             raise ConcordiaProtocolError(
                 f"Concordia request timed out after {self._timeout}s"
             ) from e
-        except httpx.RequestError as e:
+        except TransportError as e:
             raise ConcordiaProtocolError(
                 f"Concordia transport error: {e}"
             ) from e
