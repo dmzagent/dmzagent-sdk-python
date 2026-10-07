@@ -19,7 +19,7 @@ import pytest
 from dmzagent import DMZAgent
 from dmzagent._http import UrllibTransport, encode_json, resolve_transport
 from dmzagent.concordia import ConcordiaClient
-from dmzagent.errors import RateLimitError, ServerError, ValidationError
+from dmzagent.errors import DMZAgentError, RateLimitError, ServerError, ValidationError
 
 _KEY = "ck_test_xxxxxxxxxxxxxxxxxxxxx"
 
@@ -162,3 +162,38 @@ def test_concordia_speaks_json_rpc_over_the_same_layer(server: _Server) -> None:
 def test_a_transport_that_is_neither_kind_is_refused() -> None:
     with pytest.raises(TypeError, match="transport must be"):
         DMZAgent(api_key=_KEY, transport=object())
+
+
+def test_agent_mode_over_a_real_socket(server: _Server) -> None:
+    """The step POST carries the caller's Idempotency-Key and its answer is
+    read; the conduct-record GET keeps a subject id's colons in the path."""
+    server.reply(200, {"frame_id": "fr_1", "interaction_id": "sess_1",
+                       "directive": "quarantine", "settled": True, "behaviors": []})
+    server.reply(200, {"behaviors": [], "next_cursor": None})
+    server.reply(404, {"detail": "not found"})
+    server.reply(200, {"behaviors": [], "next_cursor": None})
+    server.reply(200, b"<html>bad gateway</html>")
+    cx = DMZAgent(api_key=_KEY, base_url=server.url)
+
+    r = cx.agent_session("subject:dv_test:agent-a", "sess_1").call(
+        "call_1", "Bash", {"command": "ls"}, idempotency_key="k-1")
+    cx.list_behaviors("subject:dv_test:agent-a", polarity="negative", limit=10)
+    with pytest.raises(DMZAgentError) as e:
+        cx.get_approval("apr_missing")
+
+    cx.list_behaviors("team/a b")
+    with pytest.raises(ServerError) as unread:
+        cx.agent_step("subject:dv_test:agent-a", "sess_1", "call",
+                      call_id="call_2", tool="Bash")
+
+    step, behaviors, approval, slashed, _ = server.seen
+    assert slashed["path"] == "/v1/subjects/team%2Fa%20b/behaviors"
+    assert unread.value.status_code == 200
+    assert step["method"] == "POST" and step["path"] == "/v1/agent-stream/step"
+    assert step["headers"]["idempotency-key"] == "k-1"
+    assert json.loads(step["body"])["call_id"] == "call_1"
+    assert r.directive == "quarantine" and r.runs is False
+    assert behaviors["path"] == (
+        "/v1/subjects/subject:dv_test:agent-a/behaviors?polarity=negative&limit=10")
+    assert approval["path"] == "/v1/approvals/apr_missing"
+    assert type(e.value) is DMZAgentError and e.value.status_code == 404

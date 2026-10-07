@@ -38,7 +38,8 @@ version recorded in `__spec_version__`. See sdk-spec.md for the
 language-agnostic contract.
 """
 from .cb_cache import ON_ERROR_LAST_KNOWN, ON_ERROR_RAISE
-from .client import DMZAgent, EVENT_KINDS
+from .agent_session import AgentSession
+from .client import DMZAgent, EVENT_KINDS, STEP_PHASES
 from .conversation import Conversation
 from .errors import (
     AuthError,
@@ -51,9 +52,12 @@ from .errors import (
     ValidationError,
 )
 from .models import (
+    DIRECTIVES,
     Approval,
     ApprovalDecision,
     ApprovalPage,
+    Behavior,
+    BehaviorPage,
     CaptureResult,
     CheckResult,
     DivisionConfig,
@@ -64,6 +68,7 @@ from .models import (
     OutcomeResult,
     Remediation,
     ReviewEvent,
+    StepResult,
 )
 from .subjects import (
     is_canonical_subject_id,
@@ -80,15 +85,18 @@ from .webhook import verify_webhook_signature
 # stays cheap — the submodule imports lazily on attribute access.
 from . import concordia  # noqa: F401
 
-__version__      = "0.10.0"
-__spec_version__ = "0.10.0"
+__version__      = "0.11.0"
+__spec_version__ = "0.11.0"
 
 __all__ = [
     "DMZAgent",
     "Conversation",
+    "AgentSession",
     "Approval",
     "ApprovalDecision",
     "ApprovalPage",
+    "Behavior",
+    "BehaviorPage",
     "CaptureResult",
     "CheckResult",
     "DivisionConfig",
@@ -99,7 +107,10 @@ __all__ = [
     "OutcomeResult",
     "Remediation",
     "ReviewEvent",
+    "StepResult",
     "EVENT_KINDS",
+    "STEP_PHASES",
+    "DIRECTIVES",
     "DMZAgentError",
     "AuthError",
     "PermissionError",

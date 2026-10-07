@@ -87,7 +87,7 @@ from dmzagent import verify_webhook_signature
 
 ok = verify_webhook_signature(
     payload          = request.body,                 # raw bytes or str
-    signature_header = request.headers["DMZAgent-Signature"],
+    signature_header = request.headers["X-DMZAgent-Signature"],
     secret           = WEBHOOK_SUBSCRIPTION_SECRET,
     tolerance_seconds = 300,                          # max age, default 300
 )
@@ -96,7 +96,49 @@ if not ok:
 ```
 
 The helper returns `False` (never raises) for malformed headers,
-expired timestamps, or signature mismatches.
+expired timestamps, or signature mismatches. Pass it the raw body, before
+any JSON parsing.
+
+### What a delivery carries
+
+Every webhook POST is one JSON object:
+
+```json
+{
+  "api_version":  "2026-05-30",
+  "kind":         "approval.requested",
+  "workspace_id": "ws_xxx",
+  "title":        "",
+  "body":         "",
+  "link":         null,
+  "data":         { "...": "the event's object" },
+  "delivered_at": "2026-06-10T12:00:00.000Z"
+}
+```
+
+Read `kind` and `data`. `kind` is also sent as the `X-DMZAgent-Event`
+header; `X-DMZAgent-Delivery` is the same on every retry of one delivery,
+so deduplicate on it; `X-DMZAgent-Attempt` is 1, 2 or 3.
+
+| `kind` | `data` |
+|---|---|
+| `review.opened`, `review.resolved`, `review.updated` | a `ReviewEvent` |
+| `outcome.completed` | the outcome for one frame in one workspace |
+| `approval.requested`, `approval.decided` | an `Approval` |
+| `incident.opened`, `incident.remediated` | an `Incident` |
+| `behavior.observed` | a `Behavior`, as `list_behaviors()` returns it |
+
+For every one of these, `title` and `body` are empty and `link` is null:
+the envelope carries no words of ours for you to show, so render your own
+from `data`. **Ignore a `kind` you do not know** and answer 2xx anyway —
+a non-2xx is retried, and an unknown event that keeps failing disables
+the subscription.
+
+**A missed webhook must not become an approval.** Delivery is
+at-least-once and not guaranteed. An approval's `expires_at` runs whether
+or not you heard about it, and expiry declines. If you build only on
+`approval.requested` and never read `list_approvals()`, actions will be
+held and quietly expire — safe, but invisible. Poll the list as well.
 
 ## Concepts
 
@@ -109,7 +151,11 @@ a chat session, a transaction chain, a video feed. Events stamp an
 `interaction_id` so the full participant list and timeline is recoverable.
 
 **Circuit breaker.** A subject's current standing: `closed` (allow),
-`half_open` (allow with warning), `open` (block). State is a function
+`half_open` (allow with warning), `hold` (waiting on a person — see
+approvals below), `open` (block). A policy that matches fires with an
+`action` of `allow`, `review`, `block` or `require_approval`, which set
+those four states, and the most restrictive wins. A state this SDK does
+not know reads as `allow=False`. State is a function
 of the subject's soul evaluated against your workspace's policies.
 Recomputed after every reasoning step; cached for sub-50ms reads.
 
@@ -185,7 +231,8 @@ a `retry_after` worth acting on.
 
 A circuit-breaker policy can fire with action `require_approval`, which
 **holds** the action instead of refusing it. `check()` then hands back a
-denial that names what it is waiting on:
+denial — `state` `"hold"`, `allow` `False` — that names what it is
+waiting on:
 
 ```python
 g = cx.check(subject_id="user:ws:checkout-bot")
@@ -231,6 +278,10 @@ the integration that requested it has recorded nobody. We resolve it
 against no directory, so your users never need an account here. An empty
 one raises `ValueError` before any request goes out.
 
+To read one approval — say, the one a `hold` directive named — use
+`cx.get_approval("apr_7f3c9a1b")`. An unknown id raises `DMZAgentError`
+(status 404).
+
 Two operators who click at the same moment produce one decision and one
 `ConflictError`; `err.body["status"]` says what the approval had already
 become. That is not a retry — the call did not fail, it lost.
@@ -268,12 +319,88 @@ something nobody has answered yet.
 
 ### Paging
 
-`list_approvals()` and `get_incidents()` return one page and do not
-follow `next_cursor`. You asked for 25 and you get 25 — a method that
-quietly walked every page would turn one bounded request into an
-unbounded one against a record that only grows. `iter_approvals()` and
-`iter_incidents()` do the walk, lazily: break out of the loop and the
-next page is never requested.
+`list_approvals()`, `get_incidents()` and `list_behaviors()` return one
+page and do not follow `next_cursor`. You asked for 25 and you get 25 — a
+method that quietly walked every page would turn one bounded request into
+an unbounded one against a record that only grows. `iter_approvals()`,
+`iter_incidents()` and `iter_behaviors()` do the walk, lazily: break out
+of the loop and the next page is never requested.
+
+## Agent mode
+
+An agent session — a subject that calls tools on its own — can be
+governed one step at a time. Report each step and act on the answer:
+
+```python
+session = cx.agent_session("seat:agent-a", "sess_4b1e")   # your ids
+
+session.intent("Add a trace id to every request.",
+               paths=["src/obs/"], tools=["Edit", "Bash"])
+
+r = session.call("call_7", "Bash", {"command": "git push origin HEAD"})
+if r.runs:
+    out = run_bash("git push origin HEAD")
+    session.result("call_7", "Bash", "ok", result=out)
+else:
+    session.refused("call_7", "Bash", refused_by="governor", reason=r.reason)
+```
+
+`session.call()` is sent **before** the tool runs. Its `directive` is one
+of `proceed`, `warn`, `hold`, `block` or `shutdown`; branch on `r.runs`,
+which is `True` for `proceed` and `warn` and for nothing else. A
+directive this SDK does not know comes back as its raw string with
+`runs` `False`: an unknown word from the governor is not a yes. A step
+that cannot be sent raises; one whose 2xx answer is not JSON or has no
+directive raises `ServerError` with the response status (a retry under
+the same `idempotency_key` is safe). A call whose step raised must not
+run.
+
+On `hold`, wait for a human with `get_approval(r.approval_id)`: approved
+runs, anything else is a block. On `shutdown` the session is over.
+
+**Report every refusal, whoever refused.** When a call does not run —
+DMZAgent said no (`"governor"`), your harness's own rules said no
+(`"harness"`), or the tool, sandbox or OS refused (`"host"`) — send
+`refused()` for it. A rule an agent got around is recognisable only
+against the refusal it got around. If you know a call retries an earlier
+one, say so with `attempt_of=`; the session handle holds only its two ids
+and never guesses.
+
+A malformed step raises `ValueError` before any request is sent: an
+unknown `phase`, a `call` or `result` without `call_id` and `tool`, a
+`result` without `status`, a refusal without `refused_by` (or a
+`refused_by` on any step that is not a refusal), an `intent` step
+without a string `text`. The values of `status` and `refused_by` are not
+checked locally, since the server may add one.
+
+`agent_step(agent_subject_id, interaction_id, phase, ...)` is the same
+thing without the handle. Every step method takes `idempotency_key=`,
+sent only when you pass one and never generated — pass one when your
+harness retries a `call` step, so one call is not counted as two.
+
+### The conduct record
+
+Every answer lists `behaviors` observed in the session so far, each
+`positive` or `negative`, with a `strength`, the `source` that saw it
+(`logic` at once, `reasoning` possibly later — hence `r.settled`), and
+the frames that are its `evidence`. `tag` is the installed canon's own
+name, in its author's words; the SDK never renames or describes it.
+
+```python
+for b in cx.iter_behaviors("seat:agent-a", polarity="negative"):
+    print(b.tag, b.strength, b.interaction_id, b.evidence)
+```
+
+The subject id is sent as one path segment: `:` and `@` as written,
+every other reserved character (`/` included) percent-encoded. An id of
+`.` or `..` raises `ValueError` before any request.
+
+The record is read-only: a behavior is corrected by correcting the
+subject's soul, never by editing the behavior, so there is no method
+that removes or amends one. Behaviors that settle after their step
+answered also arrive as `behavior.observed` webhooks — read the
+delivery's `kind` and `data`; `data` is the same object
+`list_behaviors()` returns.
 
 ## Spec version
 

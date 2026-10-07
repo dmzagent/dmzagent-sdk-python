@@ -1,8 +1,64 @@
 # Changelog
 
-## [Unreleased]
+## [0.11.0] — 2026-10-07 (spec 0.11.0)
+
+### Added
+- **Agent mode** — `agent_step()` and the `agent_session()` handle, whose
+  `intent()`, `call()`, `result()` and `refused()` each send one step to
+  `POST /v1/agent-stream/step` and return a `StepResult`.
+
+  Branch on `StepResult.runs`, which is `True` for `proceed` and `warn`
+  and for nothing else. It is derived from `directive` rather than
+  stored, so the two cannot disagree. A directive this SDK does not know
+  is kept as its raw string and does not run: an unknown word from the
+  governor is not a yes. A step that cannot be sent raises, and a 2xx
+  whose body is not JSON or carries no directive string raises
+  `ServerError` with the response status, rather than returning a result.
+  `settled` is `False` and `livemode` is `None` when the server omits them.
+
+  A malformed step raises `ValueError` before any request: an empty
+  `agent_subject_id` or `interaction_id`, an unknown `phase`, a `call` or
+  `result` without `call_id` and `tool`, a `result` without `status`,
+  `refused_by` missing on a refusal or present on any step that is not
+  one, and an `intent` step without a string `text`. The values of
+  `status` and `refused_by` are not checked locally.
+
+  `idempotency_key=` is sent only when given and never generated. The
+  session handle holds its client and its two ids and nothing else: it
+  does not remember refusals or infer `attempt_of`, and it owns no
+  resource, so it has no `close()`.
+
+- **The conduct record** — `list_behaviors()` and `iter_behaviors()`,
+  returning `Behavior` in a `BehaviorPage`. `tag` is the installed
+  canon's own word. There is no method that edits or removes a behavior.
+  The subject id is one RFC 3986 path segment — `:` and `@` as written,
+  every other reserved character percent-encoded — and `.` or `..` is
+  refused locally.
+
+- **`get_approval(approval_id)`**, so a caller holding a `hold` learns
+  the decision without walking `list_approvals()`. An unknown id raises
+  `DMZAgentError` itself (404).
+
+- `STEP_PHASES` and `DIRECTIVES` constants (spec §8.6).
 
 ### Changed
+- **Package and spec version 0.11.0.**
+- **`check()` knows the breaker's four states, and an unknown one denies.**
+  `state` may be `hold` — a subject waiting on a person, with
+  `pending_approval_id` naming the approval — beside `closed`,
+  `half_open` and `open`. `allow` is still read from the wire, but is
+  believed only when the server said `true` *and* the state is `closed`
+  or `half_open`. A `hold`, an `open`, a state this SDK does not know, or
+  a response with no `allow` or no `state` now reads as `allow=False`;
+  before, a missing `allow` read as `True` and a missing `state` as
+  `closed`. `fired_policies[].action` (`allow`, `review`, `block`,
+  `require_approval`) and the anchor's `ledger_event_id` are kept as sent.
+- **README: the webhook header is `X-DMZAgent-Signature`.** The
+  verification example read `DMZAgent-Signature`, which a receiver would
+  never find. The verifier itself is unchanged. The README now also
+  documents the delivery envelope (`api_version`, `kind`, `workspace_id`,
+  `title`, `body`, `link`, `data`, `delivered_at`) and that a missed
+  webhook must not become an approval.
 - **No third-party dependencies.** The HTTP layer is now the standard
   library (`urllib.request`), so `pip install dmzagent` installs this
   package and nothing else. A process that imports the SDK, such as an
