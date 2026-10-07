@@ -110,6 +110,23 @@ def _parse_retry_after(raw: str | None) -> int | None:
     return seconds if seconds >= 0 else None
 
 
+def _path_segment(value: str, name: str) -> str:
+    """One RFC 3986 path segment (spec §2.12).
+
+    Encoded as `pchar`: `:` and `@` stay as they are — so
+    `subject:dv_x:agent-a` is sent as written — and every other reserved
+    character is percent-encoded, `/` included, so an id can never become
+    two segments. `.` and `..` are refused: no encoding makes them a
+    segment rather than a step up or a no-op, and a URL normaliser on the
+    way would silently send the request somewhere else.
+    """
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{name} is required")
+    if value in (".", ".."):
+        raise ValueError(f"{name} {value!r} cannot be sent as a path segment")
+    return quote(value, safe=":@")
+
+
 logger = logging.getLogger("dmzagent")
 
 
@@ -928,7 +945,9 @@ class DMZAgent:
         if refused_by is not None and status != "refused":
             raise ValueError(f"refused_by is only sent when status is 'refused', "
                              f"got status {status!r}")
-        if phase == "intent" and (not isinstance(intent, dict) or not intent.get("text")):
+        if phase == "intent" and (not isinstance(intent, dict)
+                                  or not isinstance(intent.get("text"), str)
+                                  or not intent["text"].strip()):
             raise ValueError("intent is required on an 'intent' step, as "
                              "{'text': ..., 'paths'?: [...], 'tools'?: [...]}")
 
@@ -949,17 +968,28 @@ class DMZAgent:
             if value is not None:
                 body[name] = value
 
-        data = self._post_json(
-            "/v1/agent-stream/step", body,
+        path = "/v1/agent-stream/step"
+        resp = self._post(
+            path, body,
             extra_headers={"Idempotency-Key": idempotency_key} if idempotency_key else None,
         )
-        # A 2xx with no directive in it is an answer nobody can read, and
-        # an unread answer is not a yes: raise rather than hand back a
-        # result whose empty directive a caller might branch on.
+        if not 200 <= resp.status_code < 300:
+            self._handle(resp, path)   # raises the §3 type for the status
+        # A 2xx that is not JSON, or has no directive string, is an answer
+        # nobody can read, and an unread answer is not a yes (spec §1.9).
+        # ServerError, with the status: the fault is on the server's side
+        # of the wire, and a retry under the same Idempotency-Key is safe.
+        # `_handle` folds an unparseable 2xx into {}, so it is not used here.
+        data: Any
+        try:
+            data = resp.json()
+        except ValueError:   # JSONDecodeError and UnicodeDecodeError both
+            data = resp.text
         if not isinstance(data, dict) or not isinstance(data.get("directive"), str):
-            raise DMZAgentError(
-                "agent step answered without a directive; the call must not run",
-                status_code=None, body=data)
+            raise ServerError(
+                f"agent step answered {resp.status_code} without a readable "
+                f"directive on {path}; the call must not run",
+                status_code=resp.status_code, body=data)
         return StepResult.from_response(data)
 
     def agent_session(self, agent_subject_id: str, interaction_id: str) -> AgentSession:
@@ -1005,8 +1035,7 @@ class DMZAgent:
 
         Does not follow `next_cursor` — see `iter_behaviors()`.
         """
-        if not isinstance(subject_id, str) or not subject_id.strip():
-            raise ValueError("subject_id is required")
+        segment = _path_segment(subject_id, "subject_id")
         params: dict[str, str] = {}
         for name, value in (("polarity", polarity), ("interaction_id", interaction_id),
                             ("since", since), ("until", until)):
@@ -1018,7 +1047,7 @@ class DMZAgent:
         if cursor is not None:
             params["cursor"] = cursor
         data = self._get_json(
-            f"/v1/subjects/{quote(subject_id, safe=':')}/behaviors", params)
+            f"/v1/subjects/{segment}/behaviors", params)
         return BehaviorPage.from_response(data)
 
     def iter_behaviors(
@@ -1097,14 +1126,23 @@ class DMZAgent:
         *,
         extra_headers: dict[str, str] | None = None,
     ) -> dict:
+        return self._handle(self._post(path, body, extra_headers=extra_headers), path)
+
+    def _post(
+        self,
+        path: str,
+        body: dict[str, Any],
+        *,
+        extra_headers: dict[str, str] | None = None,
+    ) -> Response:
+        """POST, with transport failures wrapped as ServerError (spec §3.1)."""
         url = f"{self._base_url}{path}"
         try:
-            resp = self._client.post(url, json=body, headers=extra_headers)
+            return self._client.post(url, json=body, headers=extra_headers)
         except TransportTimeout as e:
             raise ServerError(f"timeout calling {path}", body=str(e)) from e
         except TransportError as e:
             raise ServerError(f"network error calling {path}: {e}") from e
-        return self._handle(resp, path)
 
     def _handle(self, resp: Response, path: str) -> dict:
         if 200 <= resp.status_code < 300:

@@ -39,7 +39,7 @@ def verify_webhook_signature(
 
     Args:
         payload:           the raw request body. str → utf-8 encoded.
-        signature_header:  the value of the DMZAgent-Signature header.
+        signature_header:  the value of the X-DMZAgent-Signature header.
         secret:            the subscription's signing secret.
         tolerance_seconds: max age the timestamp may have, in seconds.
                            Defaults to 300 (5 minutes).

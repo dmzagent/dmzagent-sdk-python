@@ -87,7 +87,7 @@ from dmzagent import verify_webhook_signature
 
 ok = verify_webhook_signature(
     payload          = request.body,                 # raw bytes or str
-    signature_header = request.headers["DMZAgent-Signature"],
+    signature_header = request.headers["X-DMZAgent-Signature"],
     secret           = WEBHOOK_SUBSCRIPTION_SECRET,
     tolerance_seconds = 300,                          # max age, default 300
 )
@@ -96,7 +96,49 @@ if not ok:
 ```
 
 The helper returns `False` (never raises) for malformed headers,
-expired timestamps, or signature mismatches.
+expired timestamps, or signature mismatches. Pass it the raw body, before
+any JSON parsing.
+
+### What a delivery carries
+
+Every webhook POST is one JSON object:
+
+```json
+{
+  "api_version":  "2026-05-30",
+  "kind":         "approval.requested",
+  "workspace_id": "ws_xxx",
+  "title":        "",
+  "body":         "",
+  "link":         null,
+  "data":         { "...": "the event's object" },
+  "delivered_at": "2026-06-10T12:00:00.000Z"
+}
+```
+
+Read `kind` and `data`. `kind` is also sent as the `X-DMZAgent-Event`
+header; `X-DMZAgent-Delivery` is the same on every retry of one delivery,
+so deduplicate on it; `X-DMZAgent-Attempt` is 1, 2 or 3.
+
+| `kind` | `data` |
+|---|---|
+| `review.opened`, `review.resolved`, `review.updated` | a `ReviewEvent` |
+| `outcome.completed` | the outcome for one frame in one workspace |
+| `approval.requested`, `approval.decided` | an `Approval` |
+| `incident.opened`, `incident.remediated` | an `Incident` |
+| `behavior.observed` | a `Behavior`, as `list_behaviors()` returns it |
+
+For every one of these, `title` and `body` are empty and `link` is null:
+the envelope carries no words of ours for you to show, so render your own
+from `data`. **Ignore a `kind` you do not know** and answer 2xx anyway —
+a non-2xx is retried, and an unknown event that keeps failing disables
+the subscription.
+
+**A missed webhook must not become an approval.** Delivery is
+at-least-once and not guaranteed. An approval's `expires_at` runs whether
+or not you heard about it, and expiry declines. If you build only on
+`approval.requested` and never read `list_approvals()`, actions will be
+held and quietly expire — safe, but invisible. Poll the list as well.
 
 ## Concepts
 
@@ -303,8 +345,10 @@ of `proceed`, `warn`, `hold`, `block` or `shutdown`; branch on `r.runs`,
 which is `True` for `proceed` and `warn` and for nothing else. A
 directive this SDK does not know comes back as its raw string with
 `runs` `False`: an unknown word from the governor is not a yes. A step
-that cannot be sent, or whose answer has no directive, raises — and a
-call whose step raised must not run.
+that cannot be sent raises; one whose 2xx answer is not JSON or has no
+directive raises `ServerError` with the response status (a retry under
+the same `idempotency_key` is safe). A call whose step raised must not
+run.
 
 On `hold`, wait for a human with `get_approval(r.approval_id)`: approved
 runs, anything else is a block. On `shutdown` the session is over.
@@ -320,7 +364,9 @@ and never guesses.
 A malformed step raises `ValueError` before any request is sent: an
 unknown `phase`, a `call` or `result` without `call_id` and `tool`, a
 `result` without `status`, a refusal without `refused_by` (or a
-`refused_by` on a call that ran), an `intent` step without its text.
+`refused_by` on any step that is not a refusal), an `intent` step
+without a string `text`. The values of `status` and `refused_by` are not
+checked locally, since the server may add one.
 
 `agent_step(agent_subject_id, interaction_id, phase, ...)` is the same
 thing without the handle. Every step method takes `idempotency_key=`,
@@ -339,6 +385,10 @@ name, in its author's words; the SDK never renames or describes it.
 for b in cx.iter_behaviors("seat:agent-a", polarity="negative"):
     print(b.tag, b.strength, b.interaction_id, b.evidence)
 ```
+
+The subject id is sent as one path segment: `:` and `@` as written,
+every other reserved character (`/` included) percent-encoded. An id of
+`.` or `..` raises `ValueError` before any request.
 
 The record is read-only: a behavior is corrected by correcting the
 subject's soul, never by editing the behavior, so there is no method

@@ -171,6 +171,8 @@ def test_agent_mode_over_a_real_socket(server: _Server) -> None:
                        "directive": "quarantine", "settled": True, "behaviors": []})
     server.reply(200, {"behaviors": [], "next_cursor": None})
     server.reply(404, {"detail": "not found"})
+    server.reply(200, {"behaviors": [], "next_cursor": None})
+    server.reply(200, b"<html>bad gateway</html>")
     cx = DMZAgent(api_key=_KEY, base_url=server.url)
 
     r = cx.agent_session("subject:dv_test:agent-a", "sess_1").call(
@@ -179,7 +181,14 @@ def test_agent_mode_over_a_real_socket(server: _Server) -> None:
     with pytest.raises(DMZAgentError) as e:
         cx.get_approval("apr_missing")
 
-    step, behaviors, approval = server.seen
+    cx.list_behaviors("team/a b")
+    with pytest.raises(ServerError) as unread:
+        cx.agent_step("subject:dv_test:agent-a", "sess_1", "call",
+                      call_id="call_2", tool="Bash")
+
+    step, behaviors, approval, slashed, _ = server.seen
+    assert slashed["path"] == "/v1/subjects/team%2Fa%20b/behaviors"
+    assert unread.value.status_code == 200
     assert step["method"] == "POST" and step["path"] == "/v1/agent-stream/step"
     assert step["headers"]["idempotency-key"] == "k-1"
     assert json.loads(step["body"])["call_id"] == "call_1"

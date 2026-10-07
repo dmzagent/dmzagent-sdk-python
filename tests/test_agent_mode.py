@@ -168,7 +168,36 @@ def test_a_refuser_on_a_call_step_is_refused():
     _refused_locally("refused", _AGENT, _SESSION, "call", refused_by="harness", **_CALL)
 
 
-@pytest.mark.parametrize("intent", [None, {}, {"paths": ["src/"]}, "do the thing"])
+def test_a_refuser_on_an_intent_step_is_refused():
+    """§5.22: refused_by without status refused is refused on any phase."""
+    _refused_locally("refused", _AGENT, _SESSION, "intent",
+                     intent={"text": "x"}, refused_by="host")
+
+
+@pytest.mark.parametrize("phase", ["call", "intent"])
+def test_status_refused_on_any_phase_needs_a_refuser(phase):
+    kw = {"intent": {"text": "x"}} if phase == "intent" else dict(_CALL)
+    _refused_locally("refused_by", _AGENT, _SESSION, phase, status="refused", **kw)
+
+
+@pytest.mark.parametrize("status", ["timed_out", "skipped"])
+def test_an_unknown_status_value_is_not_checked_locally(status):
+    """Appendix B lets the server add one (§5.22)."""
+    cx, seen = _client(_serve(_answer()))
+    cx.agent_step(_AGENT, _SESSION, "result", call_id="c", tool="t", status=status)
+    assert _body(seen[0])["status"] == status
+
+
+def test_an_unknown_refuser_value_is_not_checked_locally():
+    cx, seen = _client(_serve(_answer()))
+    cx.agent_step(_AGENT, _SESSION, "result", call_id="c", tool="t",
+                  status="refused", refused_by="operator")
+    assert _body(seen[0])["refused_by"] == "operator"
+
+
+@pytest.mark.parametrize("intent", [None, {}, {"paths": ["src/"]}, "do the thing",
+                                    {"text": 7}, {"text": ["a"]}, {"text": "  "},
+                                    {"text": {"en": "x"}}])
 def test_an_intent_step_needs_an_intent_with_text(intent):
     _refused_locally("intent", _AGENT, _SESSION, "intent", intent=intent)
 
@@ -269,15 +298,56 @@ def test_the_answer_carries_its_behaviors_unrenamed():
     assert r.scope == "interaction"
 
 
-@pytest.mark.parametrize("body", [{}, {"frame_id": "fr_1"}, {"directive": None}, [1, 2]])
-def test_an_answer_with_no_directive_raises_rather_than_returning(body):
-    """An unanswered step is not a yes. A result with an empty directive
-    would read as 'does not run' — but the caller would also have no idea
-    the server never answered, so this raises."""
-    cx, _ = _client(_serve(body))
-    with pytest.raises(DMZAgentError) as e:
+@pytest.mark.parametrize("status", [200, 201])
+@pytest.mark.parametrize("body", [{}, {"frame_id": "fr_1"}, {"directive": None},
+                                  {"directive": 7}, [1, 2]])
+def test_an_answer_with_no_directive_raises_server_error_with_its_status(body, status):
+    """An unanswered step is not a yes (spec §1.9). A result with an empty
+    directive would read as 'does not run' — but the caller would also have
+    no idea the server never answered, so this raises ServerError, carrying
+    the status, because a retry under the same key is safe."""
+    cx, _ = _client(_serve(body, status=status))
+    with pytest.raises(ServerError) as e:
         cx.agent_step(_AGENT, _SESSION, "call", **_CALL)
     assert "directive" in str(e.value)
+    assert e.value.status_code == status
+
+
+@pytest.mark.parametrize("raw", [b"", b"<html>bad gateway</html>", b"proceed"])
+def test_an_answer_that_is_not_json_raises_server_error_with_its_status(raw):
+    """Not folded into {} on the way: the status and the text survive."""
+    cx, _ = _client(lambda req: httpx.Response(200, content=raw))
+    with pytest.raises(ServerError) as e:
+        cx.agent_step(_AGENT, _SESSION, "call", **_CALL)
+    assert e.value.status_code == 200
+    assert e.value.body == raw.decode()
+
+
+@pytest.mark.parametrize("status,exc", [(400, "ValidationError"), (409, "ConflictError"),
+                                        (429, "RateLimitError"), (404, "DMZAgentError")])
+def test_a_non_2xx_step_still_maps_through_section_3(status, exc):
+    cx, _ = _client(_serve({"detail": "x"}, status=status))
+    with pytest.raises(DMZAgentError) as e:
+        cx.agent_step(_AGENT, _SESSION, "call", **_CALL)
+    assert type(e.value).__name__ == exc
+    assert e.value.status_code == status
+
+
+def test_missing_settled_is_false_and_missing_livemode_is_none():
+    """§7.16. A missing livemode is unknown, not test mode; a missing
+    settled says reasoning may still be running."""
+    body = _answer()
+    del body["settled"], body["livemode"]
+    cx, _ = _client(_serve(body))
+    r = cx.agent_step(_AGENT, _SESSION, "call", **_CALL)
+    assert r.settled is False
+    assert r.livemode is None
+
+
+@pytest.mark.parametrize("raw", ["true", 1, "yes", None])
+def test_only_a_json_true_settles_a_step(raw):
+    cx, _ = _client(_serve(_answer(settled=raw)))
+    assert cx.agent_step(_AGENT, _SESSION, "call", **_CALL).settled is False
 
 
 def test_an_unreachable_governor_raises_server_error():
@@ -354,6 +424,14 @@ def test_the_session_holds_its_two_ids_and_nothing_else():
         s.refusals = []  # type: ignore[attr-defined]
 
 
+def test_the_session_owns_nothing_to_close():
+    """§5.23: no resource, so no close() and no context manager."""
+    cx, _ = _client(_serve(_answer()))
+    s = cx.agent_session(_AGENT, _SESSION)
+    for absent in ("close", "__enter__", "__exit__"):
+        assert not hasattr(s, absent), absent
+
+
 def test_each_session_method_passes_its_idempotency_key():
     cx, seen = _client(_serve(_answer()))
     s = cx.agent_session(_AGENT, _SESSION)
@@ -425,6 +503,35 @@ def test_list_behaviors_refuses_a_page_limit_before_the_round_trip(bad):
     with pytest.raises(ValueError) as e:
         cx.list_behaviors(_AGENT, limit=bad)
     assert "limit" in str(e.value)
+    assert seen == []
+
+
+@pytest.mark.parametrize("subject,raw_path", [
+    ("subject:dv_x:agent-a", "/v1/subjects/subject:dv_x:agent-a/behaviors"),
+    ("user@host:a", "/v1/subjects/user@host:a/behaviors"),
+    ("team/agent", "/v1/subjects/team%2Fagent/behaviors"),
+    ("a?b#c", "/v1/subjects/a%3Fb%23c/behaviors"),
+    ("a b%", "/v1/subjects/a%20b%25/behaviors"),
+    ("x!$&'()*+,;=", "/v1/subjects/x%21%24%26%27%28%29%2A%2B%2C%3B%3D/behaviors"),
+    ("..x", "/v1/subjects/..x/behaviors"),
+    ("ä", "/v1/subjects/%C3%A4/behaviors"),
+])
+def test_a_subject_id_is_one_path_segment(subject, raw_path):
+    """§2.12: RFC 3986 pchar — ':' and '@' as written, every other reserved
+    character percent-encoded, so an id is never two segments."""
+    cx, seen = _client(_serve({"behaviors": []}))
+    cx.list_behaviors(subject)
+    assert seen[0].url.raw_path.decode() == raw_path
+
+
+@pytest.mark.parametrize("dots", [".", ".."])
+def test_a_dot_segment_subject_id_is_refused_before_any_request(dots):
+    cx, seen = _client(_serve({"behaviors": []}))
+    with pytest.raises(ValueError) as e:
+        cx.list_behaviors(dots)
+    assert "subject_id" in str(e.value)
+    with pytest.raises(ValueError):
+        next(cx.iter_behaviors(dots))
     assert seen == []
 
 

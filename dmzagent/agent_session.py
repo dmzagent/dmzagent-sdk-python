@@ -41,9 +41,11 @@ class AgentSession:
     """Handle for one agent session. Use via `cx.agent_session(...)` —
     direct construction is not part of the public API and may change."""
 
-    # The whole of the handle's state, fixed. A slot for anything else —
-    # a list of refusals, a last call_id — would be the inference §5.23
-    # forbids, so there is no attribute to put it in.
+    # The whole of the handle's state, fixed: its client, to send with,
+    # and its two ids. A slot for anything else — a list of refusals, a
+    # last call_id — would be the inference §5.23 forbids, so there is no
+    # attribute to put it in. It owns no resource, so it has no close()
+    # and is not a context manager (§5.23).
     __slots__ = ("_agent_subject_id", "_client", "_interaction_id")
 
     def __init__(
@@ -151,17 +153,3 @@ class AgentSession:
             call_id=call_id, tool=tool, status="refused",
             refused_by=refused_by, reason=reason, attempt_of=attempt_of,
             idempotency_key=idempotency_key)
-
-    # ===================================================================== #
-    # Lifecycle
-    # ===================================================================== #
-
-    def close(self) -> None:
-        """A no-op, as on `Conversation` (spec §6.3). It ends nothing on
-        the server: agent mode has no end-of-session step."""
-
-    def __enter__(self) -> AgentSession:  # noqa: PYI034 — typing.Self is 3.11+
-        return self
-
-    def __exit__(self, *exc: object) -> None:
-        self.close()
