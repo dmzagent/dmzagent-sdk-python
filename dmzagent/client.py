@@ -492,7 +492,9 @@ class DMZAgent:
         interaction_id.
 
         Returns CheckResult — `.allow` is the binary the caller cares
-        about. `.warning` is set when state is half-open (review).
+        about. `.warning` is set when state is half-open (review). A
+        "hold" denies until a person decides (`.pending_approval_id`
+        names the approval), and a state this SDK does not know denies.
 
         With `cb_cache_ttl` set on the client (spec §4.4) a recent result
         for the same subject is served from memory instead of a round

@@ -151,7 +151,11 @@ a chat session, a transaction chain, a video feed. Events stamp an
 `interaction_id` so the full participant list and timeline is recoverable.
 
 **Circuit breaker.** A subject's current standing: `closed` (allow),
-`half_open` (allow with warning), `open` (block). State is a function
+`half_open` (allow with warning), `hold` (waiting on a person — see
+approvals below), `open` (block). A policy that matches fires with an
+`action` of `allow`, `review`, `block` or `require_approval`, which set
+those four states, and the most restrictive wins. A state this SDK does
+not know reads as `allow=False`. State is a function
 of the subject's soul evaluated against your workspace's policies.
 Recomputed after every reasoning step; cached for sub-50ms reads.
 
@@ -227,7 +231,8 @@ a `retry_after` worth acting on.
 
 A circuit-breaker policy can fire with action `require_approval`, which
 **holds** the action instead of refusing it. `check()` then hands back a
-denial that names what it is waiting on:
+denial — `state` `"hold"`, `allow` `False` — that names what it is
+waiting on:
 
 ```python
 g = cx.check(subject_id="user:ws:checkout-bot")

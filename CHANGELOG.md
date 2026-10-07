@@ -43,6 +43,16 @@
 
 ### Changed
 - **Package and spec version 0.11.0.**
+- **`check()` knows the breaker's four states, and an unknown one denies.**
+  `state` may be `hold` — a subject waiting on a person, with
+  `pending_approval_id` naming the approval — beside `closed`,
+  `half_open` and `open`. `allow` is still read from the wire, but is
+  believed only when the server said `true` *and* the state is `closed`
+  or `half_open`. A `hold`, an `open`, a state this SDK does not know, or
+  a response with no `allow` or no `state` now reads as `allow=False`;
+  before, a missing `allow` read as `True` and a missing `state` as
+  `closed`. `fired_policies[].action` (`allow`, `review`, `block`,
+  `require_approval`) and the anchor's `ledger_event_id` are kept as sent.
 - **README: the webhook header is `X-DMZAgent-Signature`.** The
   verification example read `DMZAgent-Signature`, which a receiver would
   never find. The verifier itself is unchanged. The README now also

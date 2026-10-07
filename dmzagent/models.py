@@ -31,15 +31,33 @@ def _opt_bool(raw: Any) -> bool | None:
     return raw if isinstance(raw, bool) else None
 
 
+#: Breaker states under which the server's `allow` may be believed (spec
+#: §2.2). `hold` and `open` deny, and so does any state this SDK does not
+#: know (Appendix B) — a new word from the server is not a yes.
+_ALLOWING_STATES = frozenset({"closed", "half_open"})
+
+
 @dataclass(frozen=True)
 class CheckResult:
-    """Return type of `DMZAgent.check()`."""
+    """Return type of `DMZAgent.check()`.
 
-    state:           str               # "closed" | "half_open" | "open"
-    allow:           bool              # False only when state == "open"
+    `allow` is read from the wire, and is True only when the server said
+    `true` *and* `state` is one that allows: "closed" or "half_open". A
+    "hold" (a subject waiting on a person — `pending_approval_id` names
+    the approval), an "open", a state this SDK has never heard of, or a
+    response with no `allow` at all reads as a denial.
+
+    `fired_policies[].action` is kept verbatim: "allow", "review", "block"
+    or "require_approval", or whatever the server adds. `anchor` is kept
+    as sent; it may carry `ledger_event_id` beside `ledger_index` and
+    `hash`.
+    """
+
+    state:           str               # "closed" | "half_open" | "hold" | "open" | raw unknown
+    allow:           bool              # False when state is "hold", "open" or unknown
     warning:         bool              # True when state == "half_open"
     reason:          str
-    fired_policies:  list[dict] = field(default_factory=list)
+    fired_policies:  list[dict] = field(default_factory=list)   # [{cb_policy_id, name, action}]
     anchor:          dict | None = None
     checked_at:      str = ""
     latency_ms:      float = 0.0       # server-side cb.check() latency
@@ -55,9 +73,9 @@ class CheckResult:
     cache_age_ms:    float = 0.0       # age of the entry when it was served
     stale:           bool = False      # served past its TTL: the check failed
     # The approval this denial is waiting on, or None (spec §2.2). Non-None
-    # only alongside allow=False. It is a field rather than a fourth state
-    # so that code reading `allow` alone still refuses: a client that has
-    # never heard of approvals must not start allowing what it used to deny.
+    # only alongside allow=False, normally with state "hold". Code reading
+    # `allow` alone still refuses: a client that has never heard of
+    # approvals must not start allowing what it used to deny.
     pending_approval_id: str | None = None
     raw:             dict = field(default_factory=dict)
 
@@ -73,8 +91,11 @@ class CheckResult:
     @classmethod
     def from_response(cls, data: dict) -> "CheckResult":
         return cls(
-            state           = data.get("state", "closed"),
-            allow           = bool(data.get("allow", True)),
+            # No default of "closed": a response that names no state has
+            # not said the breaker is closed.
+            state           = data.get("state") or "",
+            allow           = data.get("allow") is True
+                              and data.get("state") in _ALLOWING_STATES,
             warning         = bool(data.get("warning", False)),
             reason          = data.get("reason", ""),
             fired_policies  = data.get("fired_policies", []) or [],
