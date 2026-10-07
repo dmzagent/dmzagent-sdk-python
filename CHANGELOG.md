@@ -1,8 +1,40 @@
 # Changelog
 
-## [Unreleased]
+## [0.11.0] — 2026-10-07 (spec 0.11.0)
+
+### Added
+- **Agent mode** — `agent_step()` and the `agent_session()` handle, whose
+  `intent()`, `call()`, `result()` and `refused()` each send one step to
+  `POST /v1/agent-stream/step` and return a `StepResult`.
+
+  Branch on `StepResult.runs`, which is `True` for `proceed` and `warn`
+  and for nothing else. It is derived from `directive` rather than
+  stored, so the two cannot disagree. A directive this SDK does not know
+  is kept as its raw string and does not run: an unknown word from the
+  governor is not a yes. A step that cannot be sent, or a 2xx whose body
+  carries no directive, raises rather than returning a result.
+
+  A malformed step raises `ValueError` before any request: an unknown
+  `phase`, a `call` or `result` without `call_id` and `tool`, a `result`
+  without `status`, `refused_by` missing on a refusal or present on a call
+  that ran, and an `intent` step without its text.
+
+  `idempotency_key=` is sent only when given and never generated. The
+  session handle holds its two ids and nothing else: it does not remember
+  refusals or infer `attempt_of`.
+
+- **The conduct record** — `list_behaviors()` and `iter_behaviors()`,
+  returning `Behavior` in a `BehaviorPage`. `tag` is the installed
+  canon's own word. There is no method that edits or removes a behavior.
+
+- **`get_approval(approval_id)`**, so a caller holding a `hold` learns
+  the decision without walking `list_approvals()`. An unknown id raises
+  `DMZAgentError` itself (404).
+
+- `STEP_PHASES` and `DIRECTIVES` constants (spec §8.6).
 
 ### Changed
+- **Package and spec version 0.11.0.**
 - **No third-party dependencies.** The HTTP layer is now the standard
   library (`urllib.request`), so `pip install dmzagent` installs this
   package and nothing else. A process that imports the SDK, such as an

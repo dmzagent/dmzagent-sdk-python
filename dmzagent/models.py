@@ -16,6 +16,7 @@ soul_version, ledger_index) are no longer populated.
 from __future__ import annotations
 
 import dataclasses
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -513,6 +514,167 @@ class IncidentPage:
         return cls(
             incidents   = [Incident.from_response(i)
                            for i in (data.get("incidents") or [])],
+            next_cursor = data.get("next_cursor"),
+            raw         = data,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Agent mode: a session governed one step at a time (spec §1.9, §2.11–§2.12,
+# §7.16–§7.18, 0.11.0)
+# ---------------------------------------------------------------------------
+
+#: The directives a step can be answered with (spec §1.9, §8.6). Only the
+#: first two let a call run; see `StepResult.runs`.
+DIRECTIVES = ("proceed", "warn", "hold", "block", "shutdown")
+
+#: The directives under which the caller runs the call. Everything else —
+#: including a word this SDK has never heard — means it does not.
+_RUNNING_DIRECTIVES = frozenset({"proceed", "warn"})
+
+
+@dataclass(frozen=True)
+class Behavior:
+    """Something DMZAgent observed an agent do (spec §7.17).
+
+    `tag` is the installed canon's own name for it, in the words of
+    whoever wrote that canon. The SDK does not map, rename or describe
+    it. `polarity` is "positive" or "negative", or the raw string when
+    the server sends one this SDK does not know (Appendix B) — it is
+    kept, not coerced.
+
+    `strength` is what the subject's soul holds for the tag *now*, and
+    falls as the soul lets it go. The record is corrected by correcting
+    the soul; there is no method here that edits or removes a behavior
+    (spec §2.12).
+
+    The last five fields are present when the behavior was read from
+    `list_behaviors()`, and None when it came on a `StepResult`.
+    """
+
+    tag:            str
+    polarity:       str            # "positive" | "negative" | raw unknown
+    strength:       float = 0.0
+    source:         str = ""       # "logic" | "reasoning"
+    evidence:       list[str] = field(default_factory=list)   # frame ids
+    calls:          list[str] = field(default_factory=list)   # call ids, MAY be empty
+    behavior_id:    str | None = None
+    subject_id:     str | None = None
+    interaction_id: str | None = None
+    observed_at:    str | None = None
+    anchor:         dict[str, Any] | None = None
+
+    @classmethod
+    def from_response(cls, data: dict[str, Any]) -> Behavior:
+        return cls(
+            tag            = data.get("tag", ""),
+            polarity       = data.get("polarity", ""),
+            strength       = float(data.get("strength") or 0),
+            source         = data.get("source", ""),
+            evidence       = data.get("evidence") or [],
+            calls          = data.get("calls") or [],
+            behavior_id    = data.get("behavior_id"),
+            subject_id     = data.get("subject_id"),
+            interaction_id = data.get("interaction_id"),
+            observed_at    = data.get("observed_at"),
+            anchor         = data.get("anchor"),
+        )
+
+
+@dataclass(frozen=True)
+class StepResult:
+    """The answer to one agent-mode step (spec §7.16).
+
+    Branch on `runs`, not on `directive`:
+
+        r = session.call("call_7", "Bash", {"command": "git push"})
+        if r.runs:
+            out = run_it()
+        else:
+            session.refused("call_7", "Bash", refused_by="governor",
+                            reason=r.reason)
+
+    `directive` is one of `DIRECTIVES`, or the raw string when the server
+    sends one this SDK does not know. `runs` is True for "proceed" and
+    "warn" and for nothing else, so an unknown word from the governor is
+    read as "block" (spec §1.9): it is not a yes. On "hold", wait on
+    `approval_id` with `get_approval()` — approved runs, anything else is
+    a block.
+
+    `settled` is False while reasoning over this step is still running;
+    behaviors it finds later arrive as `behavior.observed` webhooks and
+    through `list_behaviors()`.
+    """
+
+    frame_id:       str
+    interaction_id: str
+    directive:      str
+    scope:          str | None = None     # "subject" | "interaction" | None on proceed
+    reason:         str = ""              # the operator's policy words; MAY be empty
+    approval_id:    str | None = None     # non-None exactly on "hold"
+    settled:        bool = False
+    behaviors:      list[Behavior] = field(default_factory=list)
+    anchor:         dict[str, Any] | None = None
+    livemode:       bool | None = None
+    raw:            dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def runs(self) -> bool:
+        """May this call run? True exactly for "proceed" and "warn".
+
+        Derived, with no counterpart on the wire, and derived here rather
+        than stored so that it cannot disagree with `directive`.
+        """
+        return self.directive in _RUNNING_DIRECTIVES
+
+    @classmethod
+    def from_response(cls, data: dict[str, Any]) -> StepResult:
+        return cls(
+            frame_id       = data.get("frame_id", ""),
+            interaction_id = data.get("interaction_id", ""),
+            directive      = data.get("directive", ""),
+            scope          = data.get("scope"),
+            reason         = data.get("reason") or "",
+            approval_id    = data.get("approval_id"),
+            # Only a real `true` settles a step. A missing key says
+            # nothing has finished, which is the reading that makes a
+            # caller look for late behaviors rather than miss them.
+            settled        = data.get("settled") is True,
+            behaviors      = [Behavior.from_response(b)
+                              for b in (data.get("behaviors") or [])],
+            anchor         = data.get("anchor"),
+            livemode       = _opt_bool(data.get("livemode")),
+            raw            = data,
+        )
+
+
+@dataclass(frozen=True)
+class BehaviorPage:
+    """One page of `list_behaviors()` (spec §7.18).
+
+    Newest `observed_at` first, as the server ordered it. Not re-sorted
+    by `anchor["ledger_index"]`: logic and reasoning anchor on different
+    ledger chains, whose indexes do not compare.
+
+    `next_cursor` is None on the last page. Nothing here follows it for
+    you — see `iter_behaviors()`.
+    """
+
+    behaviors:   list[Behavior] = field(default_factory=list)
+    next_cursor: str | None = None
+    raw:         dict[str, Any] = field(default_factory=dict)
+
+    def __iter__(self) -> Iterator[Behavior]:
+        return iter(self.behaviors)
+
+    def __len__(self) -> int:
+        return len(self.behaviors)
+
+    @classmethod
+    def from_response(cls, data: dict[str, Any]) -> BehaviorPage:
+        return cls(
+            behaviors   = [Behavior.from_response(b)
+                           for b in (data.get("behaviors") or [])],
             next_cursor = data.get("next_cursor"),
             raw         = data,
         )

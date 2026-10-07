@@ -144,7 +144,19 @@ def captured():
 def stub_transport(captured):
     """An httpx mock transport that captures every request and replies
     200 with an empty body unless the test installs a custom handler."""
-    handler = {"fn": lambda req: httpx.Response(200, json={"interaction_id": "int_stub"})}
+    def _default(req: httpx.Request) -> httpx.Response:
+        # A step's answer must carry a directive, or agent_step() raises —
+        # an answer nobody can read is not a yes (spec §1.9). The golden
+        # vectors assert only what was sent, so the stub answers the step
+        # endpoint with the smallest readable answer and everything else
+        # as before.
+        if req.url.path == "/v1/agent-stream/step":
+            return httpx.Response(200, json={
+                "frame_id": "fr_stub", "interaction_id": "int_stub",
+                "directive": "proceed", "settled": True, "behaviors": []})
+        return httpx.Response(200, json={"interaction_id": "int_stub"})
+
+    handler = {"fn": _default}
 
     def _route(request: httpx.Request) -> httpx.Response:
         captured["requests"].append({
@@ -191,6 +203,13 @@ def _call_method(client: DMZAgent, method: str, args: dict):
             args.pop("approval_id"), args.pop("decision"), **args)
     if method == "get_incidents":
         return client.get_incidents(**args)
+    # 0.11.0 — agent mode, the conduct record, and one approval by id.
+    if method == "agent_step":
+        return client.agent_step(**args)
+    if method == "list_behaviors":
+        return client.list_behaviors(**args)
+    if method == "get_approval":
+        return client.get_approval(**args)
     raise AssertionError(f"unknown method: {method}")
 
 
@@ -333,3 +352,66 @@ def test_error_mapping(fx, stub_transport, captured):
             f"expected retry_after={fx['expected_retry_after']!r}, "
             f"got {ei.value.retry_after!r}"
         )
+
+
+# ===================================================================== #
+# Step vectors — how a step's answer is read (spec §1.9, §2.11, §7.16)
+#
+# `runs` is asserted on every vector, as runner-spec.md requires: it is the
+# one field a harness branches on, and the vectors that matter most are the
+# ones where it must be False — hold, block, shutdown, and a directive this
+# SDK has never heard of.
+# ===================================================================== #
+
+def _serve_in_order(transport, responses):
+    """Install a handler that serves `responses` in turn, then refuses."""
+    queue = list(responses)
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        assert queue, "the SDK made more requests than the vector scripted"
+        r = queue.pop(0)
+        return httpx.Response(r["status"], json=r["body"], headers=r.get("headers") or {})
+
+    transport.set_handler(handler)
+
+
+@pytest.mark.parametrize("fx", _load("step-vectors.json")["fixtures"],
+                          ids=lambda f: f["name"])
+def test_step_vector(fx, stub_transport, captured):
+    _serve_in_order(stub_transport, fx["responses"])
+    client = DMZAgent(api_key="ck_test_xxxxxxxxxxxxxxxxxxxxx", transport=stub_transport)
+
+    result = _call_method(client, fx["method"], dict(fx["args"]))
+
+    req = captured["requests"][-1]
+    want = fx["expected_request"]
+    assert req["method"] == want["method"], f"{fx['name']}: {req['method']}"
+    assert req["path"] == want["path"], f"{fx['name']}: {req['path']}"
+    if "body" in want:
+        assert _normalize(req["body"]) == _normalize(want["body"])
+
+    expected = fx["expected_result"]
+    assert "runs" in expected, f"{fx['name']}: every step vector must pin runs"
+    for key, value in expected.items():
+        got = getattr(result, key)
+        if key == "behaviors":
+            assert len(got) >= len(value), f"{fx['name']}: behaviors {got!r}"
+            for want_b, got_b in zip(value, got):
+                for bk, bv in want_b.items():
+                    assert getattr(got_b, bk) == bv, (
+                        f"{fx['name']}: behaviors[].{bk} expected {bv!r}, "
+                        f"got {getattr(got_b, bk)!r}")
+            continue
+        assert got == value, f"{fx['name']}: {key} expected {value!r}, got {got!r}"
+
+
+@pytest.mark.parametrize("fx", _load("step-vectors.json")["failures"],
+                          ids=lambda f: f["name"])
+def test_step_failure(fx, stub_transport):
+    _serve_in_order(stub_transport, fx["responses"])
+    client = DMZAgent(api_key="ck_test_xxxxxxxxxxxxxxxxxxxxx", transport=stub_transport)
+    expected = EXC_MAP[fx["expected_exception"]]
+    returned = None
+    with pytest.raises(expected):
+        returned = _call_method(client, fx["method"], dict(fx["args"]))
+    assert returned is None, f"{fx['name']}: a result came back where none may"

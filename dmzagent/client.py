@@ -42,7 +42,7 @@ workspace_id on the wire.
 Default base_url: `https://api.dmzagent.com`. Customers running
 against staging override with `DMZAgent(api_key=…, base_url="https://staging.api.eastern-shore-solutions.com")`.
 
-This module implements spec version 0.10.0 — see sdk-spec.md in
+This module implements spec version 0.11.0 — see sdk-spec.md in
 dmzagent-sdk-spec for the canonical surface.
 """
 from __future__ import annotations
@@ -50,7 +50,8 @@ from __future__ import annotations
 import contextlib
 import logging
 import time
-from typing import Any, Iterator
+from typing import TYPE_CHECKING, Any, Iterator
+from urllib.parse import quote
 
 from ._http import HTTPClient, Response, TransportError, TransportTimeout
 
@@ -74,6 +75,8 @@ from .cb_cache import (
 from .models import (
     Approval,
     ApprovalPage,
+    Behavior,
+    BehaviorPage,
     CaptureResult,
     CheckResult,
     DivisionConfig,
@@ -82,7 +85,11 @@ from .models import (
     IncidentPage,
     NotificationPrefs,
     OutcomeResult,
+    StepResult,
 )
+
+if TYPE_CHECKING:
+    from .agent_session import AgentSession
 
 
 def _parse_retry_after(raw: str | None) -> int | None:
@@ -108,13 +115,18 @@ logger = logging.getLogger("dmzagent")
 
 _DEFAULT_BASE_URL = "https://api.dmzagent.com"
 _DEFAULT_TIMEOUT_S = 10.0
-_SPEC_VERSION = "0.10.0"
+_SPEC_VERSION = "0.11.0"
 
 
 # Event kinds the agent_stream endpoint accepts. Mirrors
 # prothinker/connectors/agent_stream_connector.py — keep in sync via
 # the spec.
 EVENT_KINDS = ("subject_says", "tool_call", "tool_result", "observation")
+
+# Agent mode (spec §1.9, §8.6). A step is not an event kind: it goes to its
+# own endpoint, so EVENT_KINDS is unchanged. DIRECTIVES lives in models,
+# beside the `StepResult.runs` it governs.
+STEP_PHASES = ("intent", "call", "result")
 
 VALID_SUBJECT_TYPES = ("chat", "lead", "journey", "sensor", "ticket")
 
@@ -748,6 +760,30 @@ class DMZAgent:
         return self.decide_approval(approval_id, "decline", actor_id=actor_id,
                                     reason=reason, actor_label=actor_label)
 
+    def get_approval(self, approval_id: str) -> Approval:
+        """One approval, by id (spec §2.13, §5.25).
+
+        How a caller holding a "hold" directive learns whether it was
+        approved, without walking `list_approvals()`:
+
+            a = cx.get_approval(step.approval_id)
+            if a.status == "approved":
+                run_it()
+            # pending: ask again later. declined or expired: a block.
+
+        An unknown id is a 404, which raises `DMZAgentError` itself — not
+        a subclass. A dedicated not-found type would change the hierarchy
+        of spec §3, and is deferred.
+
+        An empty `approval_id` raises `ValueError` with no round trip: it
+        would otherwise request `/v1/approvals/`, whose answer is not one
+        approval.
+        """
+        if not isinstance(approval_id, str) or not approval_id.strip():
+            raise ValueError("approval_id is required")
+        data = self._get_json(f"/v1/approvals/{quote(approval_id, safe='')}")
+        return Approval.from_response(data)
+
     # ===================================================================== #
     # The incident and remediation ledger (spec §2.10, §5.19–§5.21)
     # ===================================================================== #
@@ -813,6 +849,202 @@ class DMZAgent:
     # reaches "remediated" because a remediation was appended to it, and a
     # convenience method that read as closing one would describe a ledger
     # this is not (spec §5.21).
+
+    # ===================================================================== #
+    # Agent mode — a session governed one step at a time
+    # (spec §1.9, §2.11–§2.12, §5.22–§5.24)
+    # ===================================================================== #
+
+    def agent_step(
+        self,
+        agent_subject_id: str | None = None,
+        interaction_id: str | None = None,
+        phase: str | None = None,
+        *,
+        call_id: str | None = None,
+        tool: str | None = None,
+        args: dict[str, Any] | None = None,
+        status: str | None = None,
+        result: Any = None,
+        refused_by: str | None = None,
+        reason: str | None = None,
+        attempt_of: str | None = None,
+        intent: dict[str, Any] | None = None,
+        occurred_at: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        idempotency_key: str | None = None,
+    ) -> StepResult:
+        """Report one step of an agent session and get its directive.
+
+        `phase` is "intent" (the agent states what it will do), "call"
+        (sent *before* a tool runs) or "result" (after it ran, failed, or
+        was refused). The answer says what to do next — branch on
+        `StepResult.runs`:
+
+            r = cx.agent_step("seat:agent-a", "sess_4b1e", "call",
+                              call_id="call_7", tool="Bash",
+                              args={"command": "git push origin HEAD"})
+            if r.runs:
+                ...
+
+        `cx.agent_session(...)` binds the two ids once and is the easier
+        way to send these.
+
+        Validated here, with no round trip, because a malformed step is a
+        mistake in the harness and the failure belongs where the mistake
+        is: `phase` is one of `STEP_PHASES`; `call_id` and `tool` are
+        given on "call" and "result"; `status` is given on "result";
+        `refused_by` is given exactly when `status` is "refused"; `intent`
+        is given on "intent". Each raises `ValueError`.
+
+        **An unanswered step is not a yes.** If the step cannot be sent
+        or its answer cannot be read, this raises, and the caller must not
+        run the call. An unknown directive comes back as its raw string
+        with `runs` False.
+
+        `idempotency_key` is sent only when given, and never generated
+        (spec §1.8). Pass one when your harness retries a "call" step, so
+        one call is not counted as two attempts.
+        """
+        for name, value in (("agent_subject_id", agent_subject_id),
+                            ("interaction_id", interaction_id)):
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"{name} is required on every agent step")
+        if phase not in STEP_PHASES:
+            raise ValueError(f"phase must be one of {STEP_PHASES}, got {phase!r}")
+        if phase in ("call", "result"):
+            for name, value in (("call_id", call_id), ("tool", tool)):
+                if not isinstance(value, str) or not value.strip():
+                    raise ValueError(f"{name} is required on a {phase!r} step")
+        if phase == "result" and not status:
+            raise ValueError("status is required on a 'result' step "
+                             "('ok', 'error' or 'refused')")
+        # Both directions. A refusal that does not say who refused cannot be
+        # told apart from the governor's own; a refuser on a call that ran
+        # describes a call that did not happen.
+        if status == "refused" and not refused_by:
+            raise ValueError("refused_by is required when status is 'refused' "
+                             "('governor', 'harness' or 'host')")
+        if refused_by is not None and status != "refused":
+            raise ValueError(f"refused_by is only sent when status is 'refused', "
+                             f"got status {status!r}")
+        if phase == "intent" and (not isinstance(intent, dict) or not intent.get("text")):
+            raise ValueError("intent is required on an 'intent' step, as "
+                             "{'text': ..., 'paths'?: [...], 'tools'?: [...]}")
+
+        body: dict[str, Any] = {
+            "agent_subject_id": agent_subject_id,
+            "interaction_id":   interaction_id,
+            "phase":            phase,
+        }
+        # `is not None` throughout, not truthiness: a tool that returned 0,
+        # "" or [] returned something, and that is what goes on the record.
+        optional: tuple[tuple[str, Any], ...] = (
+            ("call_id", call_id), ("tool", tool), ("args", args),
+            ("status", status), ("result", result),
+            ("refused_by", refused_by), ("reason", reason),
+            ("attempt_of", attempt_of), ("intent", intent),
+            ("occurred_at", occurred_at), ("metadata", metadata))
+        for name, value in optional:
+            if value is not None:
+                body[name] = value
+
+        data = self._post_json(
+            "/v1/agent-stream/step", body,
+            extra_headers={"Idempotency-Key": idempotency_key} if idempotency_key else None,
+        )
+        # A 2xx with no directive in it is an answer nobody can read, and
+        # an unread answer is not a yes: raise rather than hand back a
+        # result whose empty directive a caller might branch on.
+        if not isinstance(data, dict) or not isinstance(data.get("directive"), str):
+            raise DMZAgentError(
+                "agent step answered without a directive; the call must not run",
+                status_code=None, body=data)
+        return StepResult.from_response(data)
+
+    def agent_session(self, agent_subject_id: str, interaction_id: str) -> AgentSession:
+        """Open a handle bound to one agent session (spec §5.23).
+
+            session = cx.agent_session("seat:agent-a", "sess_4b1e")
+            r = session.call("call_7", "Bash", {"command": "ls"})
+
+        `interaction_id` is yours to assign, and stays the same for the
+        session's life. The handle holds those two ids and nothing else;
+        see `AgentSession`.
+        """
+        from .agent_session import AgentSession
+        return AgentSession(client=self, agent_subject_id=agent_subject_id,
+                            interaction_id=interaction_id)
+
+    def list_behaviors(
+        self,
+        subject_id: str,
+        *,
+        polarity: str | None = None,
+        interaction_id: str | None = None,
+        since: str | None = None,
+        until: str | None = None,
+        limit: int | None = None,
+        cursor: str | None = None,
+    ) -> BehaviorPage:
+        """One page of a subject's conduct record (spec §2.12).
+
+        Every behavior observed, positive and negative, across its
+        sessions — newest `observed_at` first.
+
+            for b in cx.list_behaviors("seat:agent-a", polarity="negative"):
+                print(b.tag, b.strength, b.evidence)
+
+        `polarity` is "positive", "negative" or "all"; the server's default
+        is "all", and nothing is sent unless you pass one. `since` and
+        `until` are ISO-8601, `since` inclusive and `until` exclusive.
+
+        The record is read-only here. A behavior is corrected by correcting
+        the subject's soul, never by editing the behavior, so there is no
+        method that removes or amends one.
+
+        Does not follow `next_cursor` — see `iter_behaviors()`.
+        """
+        if not isinstance(subject_id, str) or not subject_id.strip():
+            raise ValueError("subject_id is required")
+        params: dict[str, str] = {}
+        for name, value in (("polarity", polarity), ("interaction_id", interaction_id),
+                            ("since", since), ("until", until)):
+            if value is not None:
+                params[name] = value
+        if limit is not None:
+            self._require_page_limit(limit)
+            params["limit"] = str(limit)
+        if cursor is not None:
+            params["cursor"] = cursor
+        data = self._get_json(
+            f"/v1/subjects/{quote(subject_id, safe=':')}/behaviors", params)
+        return BehaviorPage.from_response(data)
+
+    def iter_behaviors(
+        self,
+        subject_id: str,
+        *,
+        polarity: str | None = None,
+        interaction_id: str | None = None,
+        since: str | None = None,
+        until: str | None = None,
+        limit: int | None = None,
+    ) -> Iterator[Behavior]:
+        """Lazily walk every page of `list_behaviors()`, on §5.17's terms."""
+        cursor: str | None = None
+        while True:
+            page = self.list_behaviors(
+                subject_id, polarity=polarity, interaction_id=interaction_id,
+                since=since, until=until, limit=limit, cursor=cursor)
+            yield from page.behaviors
+            cursor = page.next_cursor
+            if not cursor:
+                return
+
+    # There is deliberately no delete_behavior() / amend_behavior(). The
+    # conduct record is the subject's soul read through its steps: it is
+    # corrected by correcting the soul (spec §2.12).
 
     @staticmethod
     def _require_page_limit(limit: int) -> None:
